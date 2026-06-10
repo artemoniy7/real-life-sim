@@ -44,12 +44,11 @@ constexpr float CharacterMaxFallSpeed = 24.0F;
 constexpr float CharacterIdleTurnThresholdDegrees = 22.5F;
 constexpr float CharacterIdleTurnMoveStartProgress = 0.45F;
 constexpr float CharacterMovingTurnAngularSpeedDegrees = 540.0F;
-constexpr float ZoomSpeed = 1.25F;
-constexpr float MinCameraDistance = 4.0F;
-constexpr float MaxCameraDistance = 40.0F;
-constexpr float FieldOfView = 60.0F;
-constexpr float CameraYawDegrees = 45.0F;
-constexpr float CameraPitchDownDegrees = 30.0F;
+constexpr float FieldOfView = 75.0F;
+constexpr float FirstPersonEyeHeight = 1.65F;
+constexpr float MouseSensitivityDegrees = 0.12F;
+constexpr float MinCameraPitchDegrees = -85.0F;
+constexpr float MaxCameraPitchDegrees = 85.0F;
 constexpr float NearPlane = 0.1F;
 constexpr float FarPlane = 1000.0F;
 constexpr int MaxVertexBones = 4;
@@ -252,42 +251,47 @@ struct CharacterAnimationClips {
 };
 
 struct Camera {
-  glm::vec3 target{0.0F, 0.0F, 0.0F};
-  float distance = 14.0F;
-
-  [[nodiscard]] glm::vec3 position() const {
-    const float yawRadians = glm::radians(CameraYawDegrees);
-    const float pitchRadians = glm::radians(CameraPitchDownDegrees);
-    const float horizontalDistance = std::cos(pitchRadians);
-    const glm::vec3 isometricOffset{std::sin(yawRadians) * horizontalDistance,
-                                    std::sin(pitchRadians),
-                                    std::cos(yawRadians) * horizontalDistance};
-    return target + glm::normalize(isometricOffset) * distance;
-  }
+  glm::vec3 eye{0.0F, FirstPersonEyeHeight, 0.0F};
+  float yawDegrees = 0.0F;
+  float pitchDegrees = 0.0F;
 
   [[nodiscard]] glm::vec3 forward() const {
-    return glm::normalize(target - position());
+    const float yawRadians = glm::radians(yawDegrees);
+    const float pitchRadians = glm::radians(pitchDegrees);
+    const float horizontalDistance = std::cos(pitchRadians);
+    return glm::normalize(glm::vec3{std::sin(yawRadians) * horizontalDistance,
+                                    std::sin(pitchRadians),
+                                    std::cos(yawRadians) * horizontalDistance});
+  }
+
+  [[nodiscard]] glm::vec3 flatForward() const {
+    const float yawRadians = glm::radians(yawDegrees);
+    return glm::normalize(
+        glm::vec3{std::sin(yawRadians), 0.0F, std::cos(yawRadians)});
   }
 
   [[nodiscard]] glm::vec3 right() const {
-    return glm::normalize(glm::cross(forward(), glm::vec3{0.0F, 1.0F, 0.0F}));
+    return glm::normalize(
+        glm::cross(glm::vec3{0.0F, 1.0F, 0.0F}, flatForward()));
   }
 
   [[nodiscard]] glm::mat4 viewMatrix() const {
-    return glm::lookAt(position(), target, glm::vec3{0.0F, 1.0F, 0.0F});
+    return glm::lookAt(eye, eye + forward(), glm::vec3{0.0F, 1.0F, 0.0F});
   }
 
   [[nodiscard]] glm::mat4 projectionMatrix(float aspectRatio) const {
-    const float halfHeight =
-        distance * std::tan(glm::radians(FieldOfView) * 0.5F);
-    const float halfWidth = halfHeight * aspectRatio;
-    return glm::ortho(-halfWidth, halfWidth, -halfHeight, halfHeight, NearPlane,
-                      FarPlane);
+    return glm::perspective(glm::radians(FieldOfView), aspectRatio, NearPlane,
+                            FarPlane);
   }
 
-  void zoom(float amount) {
-    distance = std::clamp(distance - amount * ZoomSpeed, MinCameraDistance,
-                          MaxCameraDistance);
+  void rotate(float yawDeltaDegrees, float pitchDeltaDegrees) {
+    yawDegrees += yawDeltaDegrees;
+    pitchDegrees = std::clamp(pitchDegrees + pitchDeltaDegrees,
+                              MinCameraPitchDegrees, MaxCameraPitchDegrees);
+  }
+
+  void followFirstPerson(const glm::vec3 &characterPosition) {
+    eye = characterPosition + glm::vec3{0.0F, FirstPersonEyeHeight, 0.0F};
   }
 };
 
@@ -333,6 +337,9 @@ struct InputState {
   Character character;
   bool wasLevelUpPressed = false;
   bool wasLevelDownPressed = false;
+  bool hasPreviousMousePosition = false;
+  double previousMouseX = 0.0;
+  double previousMouseY = 0.0;
 };
 
 glm::mat4 toGlm(const aiMatrix4x4 &matrix) {
@@ -1257,12 +1264,11 @@ std::size_t findTileIndexBySavedReference(const TileSet &tileSet,
 glm::vec3 mapTileAlignmentWorldOffset(float cellSize) {
   const float safeCellSize =
       cellSize > 0.0F ? cellSize : FallbackGroundTileCellSize;
-  return {
-      (TileMapScreenRightAlignmentCells - TileMapScreenUpAlignmentCells) *
-          safeCellSize,
-      0.0F,
-      -(TileMapScreenRightAlignmentCells + TileMapScreenUpAlignmentCells) *
-          safeCellSize};
+  return {(TileMapScreenRightAlignmentCells - TileMapScreenUpAlignmentCells) *
+              safeCellSize,
+          0.0F,
+          -(TileMapScreenRightAlignmentCells + TileMapScreenUpAlignmentCells) *
+              safeCellSize};
 }
 
 float groundTileCellSizeForTile(const TileDefinition &tile) {
@@ -1297,7 +1303,6 @@ void buildGroundTilePlacements(TileSet &tileSet) {
           GroundWorldLevel,
           0});
     }
-
   }
 }
 
@@ -1362,9 +1367,8 @@ struct SavedMapTileLoader {
         static_cast<float>(currentTile.level) * WorldLevelHeight,
         static_cast<float>(currentTile.z) * tileSet.groundTileCellSize +
             alignmentOffset.z};
-    tileSet.mapTiles.push_back(PlacedTile{tileIndex, worldPosition,
-                                           currentTile.level,
-                                           currentTile.layer});
+    tileSet.mapTiles.push_back(PlacedTile{
+        tileIndex, worldPosition, currentTile.level, currentTile.layer});
   }
 
   void parseKeyValue(const std::string &key, const std::string &value) {
@@ -1480,20 +1484,32 @@ void framebufferSizeCallback(GLFWwindow *, int width, int height) {
   glViewport(0, 0, width, height);
 }
 
-void scrollCallback(GLFWwindow *window, double, double yOffset) {
-  auto *input = static_cast<InputState *>(glfwGetWindowUserPointer(window));
-  if (input == nullptr) {
+void scrollCallback(GLFWwindow *, double, double) {}
+
+glm::vec3 firstPersonMoveDirection(const Camera &camera, float rightAmount,
+                                   float forwardAmount) {
+  return camera.right() * rightAmount + camera.flatForward() * forwardAmount;
+}
+
+void updateFirstPersonMouseLook(GLFWwindow *window, InputState &input) {
+  double mouseX = 0.0;
+  double mouseY = 0.0;
+  glfwGetCursorPos(window, &mouseX, &mouseY);
+
+  if (!input.hasPreviousMousePosition) {
+    input.previousMouseX = mouseX;
+    input.previousMouseY = mouseY;
+    input.hasPreviousMousePosition = true;
     return;
   }
 
-  input->camera.zoom(static_cast<float>(yOffset));
-}
+  const double deltaX = mouseX - input.previousMouseX;
+  const double deltaY = mouseY - input.previousMouseY;
+  input.previousMouseX = mouseX;
+  input.previousMouseY = mouseY;
 
-glm::vec3 screenDirectionToWorldDirection(float screenRight, float screenUp) {
-  const glm::vec3 worldScreenRight =
-      glm::normalize(glm::vec3{1.0F, 0.0F, -1.0F});
-  const glm::vec3 worldScreenUp = glm::normalize(glm::vec3{-1.0F, 0.0F, -1.0F});
-  return worldScreenRight * screenRight + worldScreenUp * screenUp;
+  input.camera.rotate(static_cast<float>(deltaX) * MouseSensitivityDegrees,
+                      static_cast<float>(-deltaY) * MouseSensitivityDegrees);
 }
 
 bool isIdleTurnAnimationState(CharacterAnimationState animationState) {
@@ -1701,10 +1717,10 @@ float safeGroundTileCellSize(const TileSet &tileSet) {
 }
 
 float projectedTileCellCenterYPixels(const TileDefinition &tile) {
-  const float spriteWidth = static_cast<float>(tile.size.x > 0 ? tile.size.x
-                                                               : tile.frameSize.x);
-  const float spriteHeight = static_cast<float>(tile.size.y > 0 ? tile.size.y
-                                                                : tile.frameSize.y);
+  const float spriteWidth =
+      static_cast<float>(tile.size.x > 0 ? tile.size.x : tile.frameSize.x);
+  const float spriteHeight =
+      static_cast<float>(tile.size.y > 0 ? tile.size.y : tile.frameSize.y);
   const float diamondHeight = spriteWidth * 0.5F;
   return std::max(diamondHeight * 0.5F, spriteHeight - diamondHeight * 0.5F);
 }
@@ -1713,16 +1729,16 @@ glm::vec2 spriteCollisionPointForWorldPosition(const TileSet &tileSet,
                                                const TileDefinition &tile,
                                                const PlacedTile &placedTile,
                                                const glm::vec3 &position) {
-  const float spriteWidth = static_cast<float>(tile.size.x > 0 ? tile.size.x
-                                                               : tile.frameSize.x);
-  const float spriteHeight = static_cast<float>(tile.size.y > 0 ? tile.size.y
-                                                                : tile.frameSize.y);
+  const float spriteWidth =
+      static_cast<float>(tile.size.x > 0 ? tile.size.x : tile.frameSize.x);
+  const float spriteHeight =
+      static_cast<float>(tile.size.y > 0 ? tile.size.y : tile.frameSize.y);
   const float cellSize = safeGroundTileCellSize(tileSet);
   const float localCellX = (position.x - placedTile.position.x) / cellSize;
   const float localCellZ = (position.z - placedTile.position.z) / cellSize;
   const float diamondHeight = spriteWidth * 0.5F;
-  const float spriteX = spriteWidth * 0.5F +
-                        (localCellX - localCellZ) * spriteWidth * 0.5F;
+  const float spriteX =
+      spriteWidth * 0.5F + (localCellX - localCellZ) * spriteWidth * 0.5F;
   const float spriteY = projectedTileCellCenterYPixels(tile) +
                         (localCellX + localCellZ) * diamondHeight * 0.5F;
   return {spriteX / spriteWidth, spriteY / spriteHeight};
@@ -1736,9 +1752,8 @@ float squaredDistanceToSegment(const glm::vec2 &point, const glm::vec2 &start,
     return glm::dot(point - start, point - start);
   }
 
-  const float projection =
-      std::clamp(glm::dot(point - start, segment) / segmentLengthSquared, 0.0F,
-                 1.0F);
+  const float projection = std::clamp(
+      glm::dot(point - start, segment) / segmentLengthSquared, 0.0F, 1.0F);
   const glm::vec2 closest = start + segment * projection;
   return glm::dot(point - closest, point - closest);
 }
@@ -1763,10 +1778,10 @@ bool collisionShapeContainsSpritePoint(const CollisionShape &shape,
     return relative.x / halfSize.x + relative.y / halfSize.y <= 1.0F;
   }
   case CollisionShapeType::Circle: {
-    const float spriteWidth = static_cast<float>(tile.size.x > 0 ? tile.size.x
-                                                                 : tile.frameSize.x);
-    const float spriteHeight = static_cast<float>(tile.size.y > 0 ? tile.size.y
-                                                                  : tile.frameSize.y);
+    const float spriteWidth =
+        static_cast<float>(tile.size.x > 0 ? tile.size.x : tile.frameSize.x);
+    const float spriteHeight =
+        static_cast<float>(tile.size.y > 0 ? tile.size.y : tile.frameSize.y);
     const glm::vec2 pixelPoint{point.x * spriteWidth, point.y * spriteHeight};
     const glm::vec2 pixelCenter{shape.center.x * spriteWidth,
                                 shape.center.y * spriteHeight};
@@ -1775,10 +1790,10 @@ bool collisionShapeContainsSpritePoint(const CollisionShape &shape,
     return glm::distance(pixelPoint, pixelCenter) <= pixelRadius;
   }
   case CollisionShapeType::Segment: {
-    const float spriteWidth = static_cast<float>(tile.size.x > 0 ? tile.size.x
-                                                                 : tile.frameSize.x);
-    const float spriteHeight = static_cast<float>(tile.size.y > 0 ? tile.size.y
-                                                                  : tile.frameSize.y);
+    const float spriteWidth =
+        static_cast<float>(tile.size.x > 0 ? tile.size.x : tile.frameSize.x);
+    const float spriteHeight =
+        static_cast<float>(tile.size.y > 0 ? tile.size.y : tile.frameSize.y);
     const glm::vec2 pixelPoint{point.x * spriteWidth, point.y * spriteHeight};
     const glm::vec2 pixelStart{shape.start.x * spriteWidth,
                                shape.start.y * spriteHeight};
@@ -1803,7 +1818,8 @@ bool collisionShapeContainsWorldPosition(const TileSet &tileSet,
                                          const glm::vec3 &position) {
   return collisionShapeContainsSpritePoint(
       shape, tile,
-      spriteCollisionPointForWorldPosition(tileSet, tile, placedTile, position));
+      spriteCollisionPointForWorldPosition(tileSet, tile, placedTile,
+                                           position));
 }
 
 bool collisionDefinitionContainsWorldPosition(
@@ -1831,7 +1847,7 @@ bool collisionDefinitionContainsWorldPosition(
 
     for (const glm::vec3 &samplePosition : samplePositions) {
       if (collisionShapeContainsWorldPosition(tileSet, tile, placedTile, shape,
-                                             samplePosition)) {
+                                              samplePosition)) {
         return true;
       }
     }
@@ -1899,8 +1915,8 @@ bool hasWalkableTileAtLevel(const TileSet &tileSet, int level,
       continue;
     }
 
-    if (isFloorLayer && isInsidePlacedTileCell(tileSet, placedTile, position,
-                                              0.0F)) {
+    if (isFloorLayer &&
+        isInsidePlacedTileCell(tileSet, placedTile, position, 0.0F)) {
       return true;
     }
   }
@@ -2169,6 +2185,8 @@ void processKeyboard(GLFWwindow *window, InputState &input, float deltaTime,
     glfwSetWindowShouldClose(window, GLFW_TRUE);
   }
 
+  updateFirstPersonMouseLook(window, input);
+
   const bool isLevelUpPressed =
       glfwGetKey(window, GLFW_KEY_PAGE_UP) == GLFW_PRESS;
   const bool isLevelDownPressed =
@@ -2177,7 +2195,7 @@ void processKeyboard(GLFWwindow *window, InputState &input, float deltaTime,
     input.wasLevelUpPressed = isLevelUpPressed;
     input.wasLevelDownPressed = isLevelDownPressed;
     updateFallingCharacter(input.character, tileSet, deltaTime);
-    input.camera.target = input.character.position;
+    input.camera.followFirstPerson(input.character.position);
     return;
   }
   if (isLevelUpPressed && !input.wasLevelUpPressed) {
@@ -2189,19 +2207,20 @@ void processKeyboard(GLFWwindow *window, InputState &input, float deltaTime,
   input.wasLevelUpPressed = isLevelUpPressed;
   input.wasLevelDownPressed = isLevelDownPressed;
   input.character.position.y = worldYForLevel(input.character.level);
+  input.character.facing = input.camera.flatForward();
 
   glm::vec3 movement{0.0F, 0.0F, 0.0F};
   if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
-    movement += screenDirectionToWorldDirection(0.0F, 1.0F);
+    movement += firstPersonMoveDirection(input.camera, 0.0F, 1.0F);
   }
   if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
-    movement += screenDirectionToWorldDirection(0.0F, -1.0F);
+    movement += firstPersonMoveDirection(input.camera, 0.0F, -1.0F);
   }
   if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
-    movement += screenDirectionToWorldDirection(1.0F, 0.0F);
+    movement += firstPersonMoveDirection(input.camera, 1.0F, 0.0F);
   }
   if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
-    movement += screenDirectionToWorldDirection(-1.0F, 0.0F);
+    movement += firstPersonMoveDirection(input.camera, -1.0F, 0.0F);
   }
 
   const bool wantsToMove = glm::length(movement) > 0.0F;
@@ -2248,7 +2267,8 @@ void processKeyboard(GLFWwindow *window, InputState &input, float deltaTime,
     beginCharacterFall(input.character,
                        wantsToMove ? moveDirection : input.character.facing);
   }
-  input.camera.target = input.character.position;
+  input.character.facing = input.camera.flatForward();
+  input.camera.followFirstPerson(input.character.position);
 }
 
 void loadMatrix(GLenum matrixMode, const glm::mat4 &matrix) {
@@ -2889,8 +2909,6 @@ boneMatricesForCharacter(const Character &character, const Model &bodyModel,
 }
 
 void renderScene(const Camera &camera, const Character &character,
-                 const Model &bodyModel, const Texture2D &bodyTexture,
-                 const CharacterAnimationClips &animations,
                  const TileSet &tileSet, int framebufferWidth,
                  int framebufferHeight) {
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -2912,19 +2930,10 @@ void renderScene(const Camera &camera, const Character &character,
   }
   drawTileSet(tileSet, camera, false);
 
-  glPushMatrix();
-  glTranslatef(character.position.x, character.position.y,
-               character.position.z);
-  glRotatef(rotationDegreesForFacing(character.facing), 0.0F, 1.0F, 0.0F);
-  if (bodyModel.isLoaded()) {
-    glScalef(0.01F, 0.01F, 0.01F);
-    drawModelWithBoneMatrices(
-        bodyModel, boneMatricesForCharacter(character, bodyModel, animations),
-        bodyTexture);
-  } else {
-    drawCube();
-  }
-  glPopMatrix();
+  // First-person mode intentionally does not draw the player body or its
+  // animation rig. Animation state is still updated by the gameplay loop so
+  // the same animation engine can be reused for third-person viewers, mirrors,
+  // or networked characters later.
 }
 
 GLFWwindow *createWindow() {
@@ -2932,9 +2941,9 @@ GLFWwindow *createWindow() {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
   glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-  GLFWwindow *window = glfwCreateWindow(WindowWidth, WindowHeight,
-                                        "Project Zomboid C++ Engine Prototype",
-                                        nullptr, nullptr);
+  GLFWwindow *window = glfwCreateWindow(
+      WindowWidth, WindowHeight, "First Person Animation Engine Prototype",
+      nullptr, nullptr);
   if (window == nullptr) {
     std::cerr << "Failed to create a GLFW window.\n";
     return nullptr;
@@ -2943,7 +2952,7 @@ GLFWwindow *createWindow() {
   glfwMakeContextCurrent(window);
   glfwSwapInterval(1);
   glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
-  glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+  glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
   return window;
 }
 } // namespace
@@ -2966,7 +2975,7 @@ int main() {
   glfwSetScrollCallback(window, scrollCallback);
 
   const Model bodyModel = loadModel(BodyModelPath);
-  const Texture2D bodyTexture = loadTexture2D(BodyTexturePath);
+  [[maybe_unused]] const Texture2D bodyTexture = loadTexture2D(BodyTexturePath);
   const TileSet tileSet = loadTileSet(Tiles1xTexturePackPath);
   CharacterAnimationClips animations;
   animations.idle = loadAnimationClip(IdleAnimationPath, "Bob_Idle");
@@ -3014,8 +3023,8 @@ int main() {
     int framebufferWidth = 0;
     int framebufferHeight = 0;
     glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
-    renderScene(input.camera, input.character, bodyModel, bodyTexture,
-                animations, tileSet, framebufferWidth, framebufferHeight);
+    renderScene(input.camera, input.character, tileSet, framebufferWidth,
+                framebufferHeight);
 
     glfwSwapBuffers(window);
     glfwPollEvents();
