@@ -1,10 +1,18 @@
 #include <GLFW/glfw3.h>
 
+#include <assimp/Importer.hpp>
+#include <assimp/matrix4x4.h>
+#include <assimp/postprocess.h>
+#include <assimp/scene.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 constexpr int WindowWidth = 1280;
@@ -19,6 +27,12 @@ constexpr float MinPitchDegrees = -85.0F;
 constexpr float MaxPitchDegrees = 85.0F;
 constexpr float GrassPlatformHalfSize = 40.0F;
 constexpr float GrassPlatformY = 0.0F;
+constexpr float EditorObjectMoveSpeed = 4.0F;
+constexpr float EditorObjectVerticalMoveSpeed = 2.0F;
+constexpr float EditorObjectScaleSpeed = 1.6F;
+constexpr float MinEditorObjectScale = 0.05F;
+constexpr float MaxEditorObjectScale = 20.0F;
+constexpr const char *DefaultEditorModelPath = "media/models/Bob.fbx";
 constexpr float Pi = 3.14159265358979323846F;
 
 struct Vec3 {
@@ -140,10 +154,34 @@ struct Player {
   AnimationController animation;
 };
 
+struct StaticModel {
+  std::vector<Vec3> vertices;
+  std::vector<unsigned int> indices;
+  std::filesystem::path sourcePath;
+
+  [[nodiscard]] bool isLoaded() const {
+    return !vertices.empty() && !indices.empty();
+  }
+};
+
+struct MapObject {
+  StaticModel model;
+  Vec3 position{0.0F, GrassPlatformY, 0.0F};
+  float scale = 1.0F;
+};
+
+struct EditorState {
+  bool isEnabled = false;
+  MapObject object;
+  std::filesystem::path modelPath = DefaultEditorModelPath;
+};
+
 struct InputState {
   bool hasPreviousMousePosition = false;
   double previousMouseX = 0.0;
   double previousMouseY = 0.0;
+  bool wasToggleEditorPressed = false;
+  bool wasLoadModelPressed = false;
 };
 
 void errorCallback(int error, const char *description) {
@@ -152,6 +190,80 @@ void errorCallback(int error, const char *description) {
 
 void framebufferSizeCallback(GLFWwindow *, int width, int height) {
   glViewport(0, 0, width, height);
+}
+
+Vec3 transformPoint(const aiMatrix4x4 &matrix, const aiVector3D &point) {
+  return {matrix.a1 * point.x + matrix.a2 * point.y + matrix.a3 * point.z +
+              matrix.a4,
+          matrix.b1 * point.x + matrix.b2 * point.y + matrix.b3 * point.z +
+              matrix.b4,
+          matrix.c1 * point.x + matrix.c2 * point.y + matrix.c3 * point.z +
+              matrix.c4};
+}
+
+void appendAssimpNodeMeshes(const aiScene &scene, const aiNode &node,
+                            const aiMatrix4x4 &parentTransform,
+                            StaticModel &model) {
+  const aiMatrix4x4 transform = parentTransform * node.mTransformation;
+
+  for (unsigned int meshSlot = 0; meshSlot < node.mNumMeshes; ++meshSlot) {
+    const unsigned int meshIndex = node.mMeshes[meshSlot];
+    if (meshIndex >= scene.mNumMeshes) {
+      continue;
+    }
+
+    const aiMesh &mesh = *scene.mMeshes[meshIndex];
+    const unsigned int baseVertex =
+        static_cast<unsigned int>(model.vertices.size());
+    model.vertices.reserve(model.vertices.size() + mesh.mNumVertices);
+    for (unsigned int vertexIndex = 0; vertexIndex < mesh.mNumVertices;
+         ++vertexIndex) {
+      model.vertices.push_back(
+          transformPoint(transform, mesh.mVertices[vertexIndex]));
+    }
+
+    for (unsigned int faceIndex = 0; faceIndex < mesh.mNumFaces; ++faceIndex) {
+      const aiFace &face = mesh.mFaces[faceIndex];
+      if (face.mNumIndices != 3) {
+        continue;
+      }
+      model.indices.push_back(baseVertex + face.mIndices[0]);
+      model.indices.push_back(baseVertex + face.mIndices[1]);
+      model.indices.push_back(baseVertex + face.mIndices[2]);
+    }
+  }
+
+  for (unsigned int childIndex = 0; childIndex < node.mNumChildren;
+       ++childIndex) {
+    appendAssimpNodeMeshes(scene, *node.mChildren[childIndex], transform,
+                           model);
+  }
+}
+
+StaticModel loadFbxModel(const std::filesystem::path &path) {
+  StaticModel model;
+  model.sourcePath = path;
+  if (!std::filesystem::exists(path)) {
+    std::cerr << "Editor model file was not found: " << path << '\n';
+    return model;
+  }
+
+  Assimp::Importer importer;
+  const aiScene *scene = importer.ReadFile(
+      path.string(), aiProcess_Triangulate | aiProcess_JoinIdenticalVertices |
+                         aiProcess_GenSmoothNormals |
+                         aiProcess_ImproveCacheLocality);
+  if (scene == nullptr || scene->mRootNode == nullptr) {
+    std::cerr << "Failed to load editor model " << path << ": "
+              << importer.GetErrorString() << '\n';
+    return model;
+  }
+
+  appendAssimpNodeMeshes(*scene, *scene->mRootNode, aiMatrix4x4{}, model);
+  std::cout << "Loaded editor model " << path << " with "
+            << model.vertices.size() << " vertices and "
+            << model.indices.size() / 3 << " triangles.\n";
+  return model;
 }
 
 void multiplyMatrix(const float matrix[16]) { glMultMatrixf(matrix); }
@@ -260,8 +372,9 @@ void clampPlayerToGrassPlatform(Player &player) {
 }
 
 void updatePlayer(GLFWwindow *window, Player &player, Camera &camera,
-                  float deltaTime) {
-  const Vec3 movement = readMovement(window, camera);
+                  const EditorState &editor, float deltaTime) {
+  const Vec3 movement =
+      editor.isEnabled ? Vec3{} : readMovement(window, camera);
   const bool isMoving = length(movement) > 0.0F;
   if (isMoving) {
     player.feetPosition += normalize(movement) * (PlayerMoveSpeed * deltaTime);
@@ -270,6 +383,78 @@ void updatePlayer(GLFWwindow *window, Player &player, Camera &camera,
 
   player.animation.update(isMoving, deltaTime);
   camera.position = player.feetPosition + Vec3{0.0F, PlayerEyeHeight, 0.0F};
+}
+
+void placeEditorObjectInFrontOfCamera(EditorState &editor,
+                                      const Camera &camera) {
+  editor.object.position = camera.position + camera.flatForward() * 4.0F;
+  editor.object.position.y = GrassPlatformY;
+}
+
+void updateEditorControls(GLFWwindow *window, InputState &input,
+                          EditorState &editor, const Camera &camera,
+                          float deltaTime) {
+  const bool isToggleEditorPressed =
+      glfwGetKey(window, GLFW_KEY_L) == GLFW_PRESS;
+  if (isToggleEditorPressed && !input.wasToggleEditorPressed) {
+    editor.isEnabled = !editor.isEnabled;
+    std::cout << (editor.isEnabled ? "Map editor enabled.\n"
+                                   : "Map editor disabled.\n");
+  }
+  input.wasToggleEditorPressed = isToggleEditorPressed;
+
+  if (!editor.isEnabled) {
+    return;
+  }
+
+  const bool isLoadModelPressed = glfwGetKey(window, GLFW_KEY_O) == GLFW_PRESS;
+  if (isLoadModelPressed && !input.wasLoadModelPressed) {
+    StaticModel loadedModel = loadFbxModel(editor.modelPath);
+    if (loadedModel.isLoaded()) {
+      editor.object.model = std::move(loadedModel);
+      editor.object.scale = 1.0F;
+      placeEditorObjectInFrontOfCamera(editor, camera);
+    }
+  }
+  input.wasLoadModelPressed = isLoadModelPressed;
+
+  Vec3 objectMovement{};
+  if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) {
+    objectMovement += {0.0F, 0.0F, -1.0F};
+  }
+  if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) {
+    objectMovement += {0.0F, 0.0F, 1.0F};
+  }
+  if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) {
+    objectMovement += {1.0F, 0.0F, 0.0F};
+  }
+  if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) {
+    objectMovement += {-1.0F, 0.0F, 0.0F};
+  }
+  if (length(objectMovement) > 0.0F) {
+    editor.object.position +=
+        normalize(objectMovement) * (EditorObjectMoveSpeed * deltaTime);
+  }
+
+  if (glfwGetKey(window, GLFW_KEY_PAGE_UP) == GLFW_PRESS) {
+    editor.object.position.y += EditorObjectVerticalMoveSpeed * deltaTime;
+  }
+  if (glfwGetKey(window, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS) {
+    editor.object.position.y -= EditorObjectVerticalMoveSpeed * deltaTime;
+  }
+
+  if (glfwGetKey(window, GLFW_KEY_EQUAL) == GLFW_PRESS ||
+      glfwGetKey(window, GLFW_KEY_KP_ADD) == GLFW_PRESS) {
+    editor.object.scale =
+        std::min(editor.object.scale + EditorObjectScaleSpeed * deltaTime,
+                 MaxEditorObjectScale);
+  }
+  if (glfwGetKey(window, GLFW_KEY_MINUS) == GLFW_PRESS ||
+      glfwGetKey(window, GLFW_KEY_KP_SUBTRACT) == GLFW_PRESS) {
+    editor.object.scale =
+        std::max(editor.object.scale - EditorObjectScaleSpeed * deltaTime,
+                 MinEditorObjectScale);
+  }
 }
 
 void drawGrassPlatform() {
@@ -296,14 +481,50 @@ void drawGrassPlatform() {
   glEnd();
 }
 
-void updateWindowTitle(GLFWwindow *window, const Player &player) {
-  const std::string title =
+void drawStaticModel(const StaticModel &model) {
+  if (!model.isLoaded()) {
+    return;
+  }
+
+  glColor3f(0.72F, 0.72F, 0.76F);
+  glBegin(GL_TRIANGLES);
+  for (unsigned int index : model.indices) {
+    if (index >= model.vertices.size()) {
+      continue;
+    }
+    const Vec3 &vertex = model.vertices[index];
+    glVertex3f(vertex.x, vertex.y, vertex.z);
+  }
+  glEnd();
+}
+
+void drawEditorObject(const EditorState &editor) {
+  if (!editor.object.model.isLoaded()) {
+    return;
+  }
+
+  glPushMatrix();
+  glTranslatef(editor.object.position.x, editor.object.position.y,
+               editor.object.position.z);
+  glScalef(editor.object.scale, editor.object.scale, editor.object.scale);
+  drawStaticModel(editor.object.model);
+  glPopMatrix();
+}
+
+void updateWindowTitle(GLFWwindow *window, const Player &player,
+                       const EditorState &editor) {
+  std::string title =
       "Simple First Person Engine - Animation: " + player.animation.debugName();
+  if (editor.isEnabled) {
+    title += " - EDITOR: L off, O load FBX, arrows move, +/- scale";
+  } else {
+    title += " - L map editor";
+  }
   glfwSetWindowTitle(window, title.c_str());
 }
 
-void renderScene(const Camera &camera, int framebufferWidth,
-                 int framebufferHeight) {
+void renderScene(const Camera &camera, const EditorState &editor,
+                 int framebufferWidth, int framebufferHeight) {
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
   const float aspectRatio = framebufferHeight > 0
@@ -314,6 +535,7 @@ void renderScene(const Camera &camera, int framebufferWidth,
   loadViewMatrix(camera);
 
   drawGrassPlatform();
+  drawEditorObject(editor);
 }
 
 void configureOpenGl() {
@@ -343,7 +565,7 @@ GLFWwindow *createWindow() {
 }
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
   glfwSetErrorCallback(errorCallback);
   if (glfwInit() != GLFW_TRUE) {
     std::cerr << "Failed to initialize GLFW.\n";
@@ -360,7 +582,14 @@ int main() {
   InputState input;
   Player player;
   Camera camera;
+  EditorState editor;
+  if (argc > 1) {
+    editor.modelPath = argv[1];
+  }
   camera.position = player.feetPosition + Vec3{0.0F, PlayerEyeHeight, 0.0F};
+
+  std::cout << "Press L to toggle map editor. In editor press O to load FBX: "
+            << editor.modelPath << '\n';
 
   float previousTime = static_cast<float>(glfwGetTime());
   while (glfwWindowShouldClose(window) == GLFW_FALSE) {
@@ -373,13 +602,14 @@ int main() {
     }
 
     updateMouseLook(window, input, camera);
-    updatePlayer(window, player, camera, deltaTime);
-    updateWindowTitle(window, player);
+    updateEditorControls(window, input, editor, camera, deltaTime);
+    updatePlayer(window, player, camera, editor, deltaTime);
+    updateWindowTitle(window, player, editor);
 
     int framebufferWidth = 0;
     int framebufferHeight = 0;
     glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
-    renderScene(camera, framebufferWidth, framebufferHeight);
+    renderScene(camera, editor, framebufferWidth, framebufferHeight);
 
     glfwSwapBuffers(window);
     glfwPollEvents();
