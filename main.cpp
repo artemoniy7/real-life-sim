@@ -1,0 +1,3027 @@
+#include <GLFW/glfw3.h>
+
+#include <assimp/Importer.hpp>
+#include <assimp/matrix4x4.h>
+#include <assimp/postprocess.h>
+#include <assimp/scene.h>
+
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/type_ptr.hpp>
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <iterator>
+#include <limits>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include <zlib.h>
+
+namespace {
+constexpr int WindowWidth = 1280;
+constexpr int WindowHeight = 720;
+constexpr float CharacterMoveSpeed = 3.2F;
+constexpr float CharacterAnimationPlaybackSpeed = 0.85F;
+constexpr float CharacterTransitionAnimationPlaybackSpeed = 1.35F;
+constexpr float CharacterStopToIdleBlendDuration = 0.18F;
+constexpr float CharacterStartAccelerationMinScale = 0.12F;
+constexpr float CharacterStopCoastSpeedScale = 0.55F;
+constexpr float CharacterCollisionRadius = 0.22F;
+constexpr float CharacterFallGravity = 18.0F;
+constexpr float CharacterMaxFallSpeed = 24.0F;
+constexpr float CharacterIdleTurnThresholdDegrees = 22.5F;
+constexpr float CharacterIdleTurnMoveStartProgress = 0.45F;
+constexpr float CharacterMovingTurnAngularSpeedDegrees = 540.0F;
+constexpr float ZoomSpeed = 1.25F;
+constexpr float MinCameraDistance = 4.0F;
+constexpr float MaxCameraDistance = 40.0F;
+constexpr float FieldOfView = 60.0F;
+constexpr float CameraYawDegrees = 45.0F;
+constexpr float CameraPitchDownDegrees = 30.0F;
+constexpr float NearPlane = 0.1F;
+constexpr float FarPlane = 1000.0F;
+constexpr int MaxVertexBones = 4;
+constexpr const char *BodyModelPath = "media/models/Bob.fbx";
+constexpr const char *IdleAnimationPath = "media/anim_x/bob/Bob_Idle.fbx";
+constexpr const char *IdleToWalkAnimationPath =
+    "media/anim_x/bob/Bob_IdleToWalk.fbx";
+constexpr const char *WalkToStopAnimationPath =
+    "media/anim_x/bob/Bob_WalkToStop.fbx";
+constexpr const char *WalkAnimationPath = "media/anim_x/bob/Bob_Walk.fbx";
+constexpr const char *FallIdleAnimationPath =
+    "media/anim_x/bob/Bob_FallIdle.fbx";
+constexpr const char *IdleTurn45LAnimationPath =
+    "media/anim_x/bob/Bob_IdleTurn45L.fbx";
+constexpr const char *IdleTurn45RAnimationPath =
+    "media/anim_x/bob/Bob_IdleTurn45R.fbx";
+constexpr const char *IdleTurn90LAnimationPath =
+    "media/anim_x/bob/Bob_IdleTurn90L.fbx";
+constexpr const char *IdleTurn90RAnimationPath =
+    "media/anim_x/bob/Bob_IdleTurn90R.fbx";
+constexpr const char *IdleTurn180LAnimationPath =
+    "media/anim_x/bob/Bob_IdleTurn180L.fbx";
+constexpr const char *IdleTurn180RAnimationPath =
+    "media/anim_x/bob/Bob_IdleTurn180R.fbx";
+constexpr const char *BodyTexturePath = "media/textures/Body/MaleBody01.png";
+constexpr const char *Tiles1xTexturePackPath = "media/texturepacks/Tiles1x";
+constexpr const char *DefaultMapPath = "saves/map_01.toml";
+constexpr float TileSpriteWorldScale = 1.0F / 64.0F;
+constexpr const char *GroundTileName = "blends_natural_01_TEST_22";
+constexpr int GroundTileHalfSize = 20;
+constexpr float GroundTileLayerY = -0.01F;
+constexpr float FallbackGroundTileCellSize = 0.70710678F;
+constexpr float TileMapScreenRightAlignmentCells = 0.5F;
+constexpr float TileMapScreenUpAlignmentCells = 0.5F;
+constexpr float LevelHeightInSpritePixels = 128.0F;
+constexpr float WorldLevelHeight =
+    LevelHeightInSpritePixels * TileSpriteWorldScale;
+constexpr int MinWorldLevel = -10;
+constexpr int GroundWorldLevel = 0;
+constexpr int MaxWorldLevel = 10;
+
+struct Vertex {
+  glm::vec3 position{};
+  glm::vec3 staticPosition{};
+  glm::vec3 normal{0.0F, 1.0F, 0.0F};
+  glm::vec3 staticNormal{0.0F, 1.0F, 0.0F};
+  glm::vec2 texCoord{0.0F, 0.0F};
+  std::array<int, MaxVertexBones> boneIds{-1, -1, -1, -1};
+  std::array<float, MaxVertexBones> boneWeights{0.0F, 0.0F, 0.0F, 0.0F};
+};
+
+struct Mesh {
+  std::vector<Vertex> vertices;
+  std::vector<unsigned int> indices;
+  bool isSkinned = false;
+};
+
+struct Bone {
+  std::string name;
+  glm::mat4 offsetMatrix{1.0F};
+};
+
+struct Texture2D {
+  GLuint id = 0;
+  int width = 0;
+  int height = 0;
+
+  [[nodiscard]] bool isLoaded() const { return id != 0; }
+};
+
+struct PngImage {
+  int width = 0;
+  int height = 0;
+  std::vector<unsigned char> pixels;
+
+  [[nodiscard]] bool isLoaded() const { return !pixels.empty(); }
+};
+
+struct TileDefinition {
+  std::string name;
+  std::size_t atlasIndex = 0;
+  glm::ivec2 position{0, 0};
+  glm::ivec2 size{0, 0};
+  glm::ivec2 frameOffset{0, 0};
+  glm::ivec2 frameSize{64, 128};
+};
+
+enum class CollisionShapeType {
+  None,
+  FullTile,
+  Floor,
+  Aabb,
+  Circle,
+  Diamond,
+  Segment
+};
+
+struct CollisionShape {
+  CollisionShapeType type = CollisionShapeType::None;
+  glm::vec2 min{0.0F, 0.0F};
+  glm::vec2 max{1.0F, 1.0F};
+  glm::vec2 center{0.5F, 0.5F};
+  float radius = 0.25F;
+  glm::vec2 start{0.5F, 0.0F};
+  glm::vec2 end{0.5F, 1.0F};
+  float thickness = 0.05F;
+};
+
+struct TileCollisionDefinition {
+  std::vector<CollisionShape> shapes;
+};
+
+struct TileAtlas {
+  Texture2D texture;
+  std::filesystem::path imagePath;
+};
+
+struct PlacedTile {
+  std::size_t tileIndex = 0;
+  glm::vec3 position{0.0F, 0.0F, 0.0F};
+  int level = 0;
+  int layer = 0;
+};
+
+struct TileSet {
+  std::vector<TileAtlas> atlases;
+  std::vector<TileDefinition> tiles;
+  std::vector<PlacedTile> groundTiles;
+  std::vector<PlacedTile> mapTiles;
+  std::unordered_map<std::string, TileCollisionDefinition> collisionDefinitions;
+  float groundTileCellSize = FallbackGroundTileCellSize;
+
+  [[nodiscard]] bool isLoaded() const {
+    return !atlases.empty() && !tiles.empty();
+  }
+};
+
+struct SkeletonNode {
+  std::string name;
+  glm::mat4 transform{1.0F};
+  std::vector<SkeletonNode> children;
+};
+
+struct Model {
+  std::vector<Mesh> meshes;
+  std::vector<Bone> bones;
+  std::unordered_map<std::string, int> boneIndexByName;
+  SkeletonNode rootNode;
+  glm::mat4 globalInverseTransform{1.0F};
+  unsigned int animationCount = 0;
+
+  [[nodiscard]] bool isLoaded() const { return !meshes.empty(); }
+
+  [[nodiscard]] bool hasSkeleton() const { return !bones.empty(); }
+};
+
+struct VectorKey {
+  double time = 0.0;
+  glm::vec3 value{};
+};
+
+struct QuaternionKey {
+  double time = 0.0;
+  glm::quat value{1.0F, 0.0F, 0.0F, 0.0F};
+};
+
+struct AnimationChannel {
+  std::string nodeName;
+  std::vector<VectorKey> positions;
+  std::vector<QuaternionKey> rotations;
+  std::vector<VectorKey> scales;
+};
+
+struct AnimationClip {
+  std::string name;
+  double durationTicks = 0.0;
+  double ticksPerSecond = 24.0;
+  bool retargetFirstFrameToBindPose = false;
+  bool keepBindPoseTranslations = false;
+  std::vector<AnimationChannel> channels;
+  std::unordered_map<std::string, std::size_t> channelIndexByNodeName;
+
+  [[nodiscard]] bool isLoaded() const {
+    return !channels.empty() && durationTicks > 0.0;
+  }
+};
+
+struct CharacterAnimationClips {
+  AnimationClip idle;
+  AnimationClip idleToWalk;
+  AnimationClip walk;
+  AnimationClip walkToStop;
+  AnimationClip fallIdle;
+  AnimationClip idleTurn45L;
+  AnimationClip idleTurn45R;
+  AnimationClip idleTurn90L;
+  AnimationClip idleTurn90R;
+  AnimationClip idleTurn180L;
+  AnimationClip idleTurn180R;
+};
+
+struct Camera {
+  glm::vec3 target{0.0F, 0.0F, 0.0F};
+  float distance = 14.0F;
+
+  [[nodiscard]] glm::vec3 position() const {
+    const float yawRadians = glm::radians(CameraYawDegrees);
+    const float pitchRadians = glm::radians(CameraPitchDownDegrees);
+    const float horizontalDistance = std::cos(pitchRadians);
+    const glm::vec3 isometricOffset{std::sin(yawRadians) * horizontalDistance,
+                                    std::sin(pitchRadians),
+                                    std::cos(yawRadians) * horizontalDistance};
+    return target + glm::normalize(isometricOffset) * distance;
+  }
+
+  [[nodiscard]] glm::vec3 forward() const {
+    return glm::normalize(target - position());
+  }
+
+  [[nodiscard]] glm::vec3 right() const {
+    return glm::normalize(glm::cross(forward(), glm::vec3{0.0F, 1.0F, 0.0F}));
+  }
+
+  [[nodiscard]] glm::mat4 viewMatrix() const {
+    return glm::lookAt(position(), target, glm::vec3{0.0F, 1.0F, 0.0F});
+  }
+
+  [[nodiscard]] glm::mat4 projectionMatrix(float aspectRatio) const {
+    const float halfHeight =
+        distance * std::tan(glm::radians(FieldOfView) * 0.5F);
+    const float halfWidth = halfHeight * aspectRatio;
+    return glm::ortho(-halfWidth, halfWidth, -halfHeight, halfHeight, NearPlane,
+                      FarPlane);
+  }
+
+  void zoom(float amount) {
+    distance = std::clamp(distance - amount * ZoomSpeed, MinCameraDistance,
+                          MaxCameraDistance);
+  }
+};
+
+enum class CharacterAnimationState {
+  Idle,
+  IdleToWalk,
+  Walk,
+  WalkToStop,
+  Falling,
+  IdleTurn45L,
+  IdleTurn45R,
+  IdleTurn90L,
+  IdleTurn90R,
+  IdleTurn180L,
+  IdleTurn180R,
+};
+
+struct Character {
+  glm::vec3 position{0.0F, 0.0F, 0.0F};
+  int level = 0;
+  glm::vec3 facing{0.0F, 0.0F, 1.0F};
+  glm::vec3 turnStartFacing{0.0F, 0.0F, 1.0F};
+  glm::vec3 turnTargetFacing{0.0F, 0.0F, 1.0F};
+  float turnAngleRadians = 0.0F;
+  float verticalVelocity = 0.0F;
+  float animationTime = 0.0F;
+  float animationBlendTime = 0.0F;
+  float animationBlendDuration = 0.0F;
+  float animationBlendSourceTime = 0.0F;
+  bool isMoving = false;
+  CharacterAnimationState animationState = CharacterAnimationState::Idle;
+  CharacterAnimationState animationBlendSourceState =
+      CharacterAnimationState::Idle;
+
+  [[nodiscard]] bool isAnimationBlending() const {
+    return animationBlendDuration > std::numeric_limits<float>::epsilon() &&
+           animationBlendTime < animationBlendDuration;
+  }
+};
+
+struct InputState {
+  Camera camera;
+  Character character;
+  bool wasLevelUpPressed = false;
+  bool wasLevelDownPressed = false;
+};
+
+glm::mat4 toGlm(const aiMatrix4x4 &matrix) {
+  glm::mat4 result{1.0F};
+  result[0][0] = matrix.a1;
+  result[1][0] = matrix.a2;
+  result[2][0] = matrix.a3;
+  result[3][0] = matrix.a4;
+  result[0][1] = matrix.b1;
+  result[1][1] = matrix.b2;
+  result[2][1] = matrix.b3;
+  result[3][1] = matrix.b4;
+  result[0][2] = matrix.c1;
+  result[1][2] = matrix.c2;
+  result[2][2] = matrix.c3;
+  result[3][2] = matrix.c4;
+  result[0][3] = matrix.d1;
+  result[1][3] = matrix.d2;
+  result[2][3] = matrix.d3;
+  result[3][3] = matrix.d4;
+  return result;
+}
+
+glm::vec3 toGlm(const aiVector3D &vector) {
+  return {vector.x, vector.y, vector.z};
+}
+
+glm::quat toGlm(const aiQuaternion &quaternion) {
+  return {quaternion.w, quaternion.x, quaternion.y, quaternion.z};
+}
+
+std::string normalizeAssimpName(std::string name) {
+  const std::size_t separatorPosition = name.find_last_of("|:/\\");
+  if (separatorPosition != std::string::npos &&
+      separatorPosition + 1 < name.size()) {
+    name = name.substr(separatorPosition + 1);
+  }
+
+  const std::size_t dotPosition = name.find_last_of('.');
+  if (dotPosition == std::string::npos || dotPosition + 1 >= name.size()) {
+    return name;
+  }
+
+  const bool suffixIsNumeric = std::all_of(
+      name.begin() + static_cast<std::ptrdiff_t>(dotPosition + 1), name.end(),
+      [](char value) { return value >= '0' && value <= '9'; });
+  if (suffixIsNumeric) {
+    name.erase(dotPosition);
+  }
+  return name;
+}
+
+std::string normalizedAnimationSearchName(const std::string &name) {
+  std::string normalized;
+  normalized.reserve(name.size());
+  for (char value : name) {
+    if (std::isalnum(static_cast<unsigned char>(value)) != 0) {
+      normalized.push_back(
+          static_cast<char>(std::tolower(static_cast<unsigned char>(value))));
+    }
+  }
+  return normalized;
+}
+
+std::string withoutNumericSuffix(std::string value) {
+  while (!value.empty() &&
+         std::isdigit(static_cast<unsigned char>(value.back())) != 0) {
+    value.pop_back();
+  }
+  return value;
+}
+
+const aiAnimation &chooseAnimation(const aiScene &scene,
+                                   const std::string &preferredName) {
+  const std::string preferred = normalizedAnimationSearchName(preferredName);
+  const std::string preferredBase = withoutNumericSuffix(preferred);
+  const aiAnimation *bestAnimation = scene.mAnimations[0];
+  int bestScore = -1;
+
+  for (unsigned int animationIndex = 0; animationIndex < scene.mNumAnimations;
+       ++animationIndex) {
+    const aiAnimation &animation = *scene.mAnimations[animationIndex];
+    const std::string candidate =
+        normalizedAnimationSearchName(animation.mName.C_Str());
+    const std::string candidateBase = withoutNumericSuffix(candidate);
+    int score = 0;
+    if (!preferred.empty() && candidate == preferred) {
+      score += 300;
+    } else if (!preferredBase.empty() && candidateBase == preferredBase) {
+      score += 250;
+    } else if (!preferred.empty() &&
+               candidate.find(preferred) != std::string::npos) {
+      score += 200;
+    } else if (!preferredBase.empty() &&
+               candidate.find(preferredBase) != std::string::npos) {
+      score += 150;
+    }
+    if (animation.mNumChannels > bestAnimation->mNumChannels) {
+      score += 10;
+    }
+    if (animation.mDuration > bestAnimation->mDuration) {
+      score += 1;
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestAnimation = &animation;
+    }
+  }
+
+  return *bestAnimation;
+}
+
+SkeletonNode buildSkeletonNode(const aiNode &node) {
+  SkeletonNode result;
+  result.name = normalizeAssimpName(node.mName.C_Str());
+  result.transform = toGlm(node.mTransformation);
+  result.children.reserve(node.mNumChildren);
+  for (unsigned int childIndex = 0; childIndex < node.mNumChildren;
+       ++childIndex) {
+    result.children.push_back(buildSkeletonNode(*node.mChildren[childIndex]));
+  }
+  return result;
+}
+
+int findOrCreateBone(Model &model, const aiBone &assimpBone) {
+  const std::string boneName = normalizeAssimpName(assimpBone.mName.C_Str());
+  const auto existing = model.boneIndexByName.find(boneName);
+  if (existing != model.boneIndexByName.end()) {
+    return existing->second;
+  }
+
+  const int boneIndex = static_cast<int>(model.bones.size());
+  model.boneIndexByName.emplace(boneName, boneIndex);
+  model.bones.push_back(Bone{boneName, toGlm(assimpBone.mOffsetMatrix)});
+  return boneIndex;
+}
+
+void addBoneWeight(Vertex &vertex, int boneId, float weight) {
+  for (int slot = 0; slot < MaxVertexBones; ++slot) {
+    if (vertex.boneIds[slot] < 0) {
+      vertex.boneIds[slot] = boneId;
+      vertex.boneWeights[slot] = weight;
+      return;
+    }
+  }
+
+  auto smallestWeight =
+      std::min_element(vertex.boneWeights.begin(), vertex.boneWeights.end());
+  if (smallestWeight != vertex.boneWeights.end() && weight > *smallestWeight) {
+    const int slot = static_cast<int>(
+        std::distance(vertex.boneWeights.begin(), smallestWeight));
+    vertex.boneIds[slot] = boneId;
+    vertex.boneWeights[slot] = weight;
+  }
+}
+
+void normalizeBoneWeights(Vertex &vertex) {
+  float totalWeight = 0.0F;
+  for (float weight : vertex.boneWeights) {
+    totalWeight += weight;
+  }
+
+  if (totalWeight <= std::numeric_limits<float>::epsilon()) {
+    return;
+  }
+
+  for (float &weight : vertex.boneWeights) {
+    weight /= totalWeight;
+  }
+}
+
+void appendMesh(const aiMesh &assimpMesh, const glm::mat4 &transform,
+                Model &model) {
+  Mesh mesh;
+  mesh.vertices.reserve(assimpMesh.mNumVertices);
+
+  const glm::mat3 normalMatrix =
+      glm::transpose(glm::inverse(glm::mat3(transform)));
+  for (unsigned int vertexIndex = 0; vertexIndex < assimpMesh.mNumVertices;
+       ++vertexIndex) {
+    const glm::vec3 sourcePosition = toGlm(assimpMesh.mVertices[vertexIndex]);
+    const glm::vec4 transformedPosition =
+        transform * glm::vec4{sourcePosition, 1.0F};
+    const glm::vec3 transformedPosition3{
+        transformedPosition.x, transformedPosition.y, transformedPosition.z};
+
+    glm::vec3 normal{0.0F, 1.0F, 0.0F};
+    glm::vec3 staticNormal{0.0F, 1.0F, 0.0F};
+    if (assimpMesh.HasNormals()) {
+      normal = glm::normalize(toGlm(assimpMesh.mNormals[vertexIndex]));
+      staticNormal = glm::normalize(normalMatrix * normal);
+    }
+
+    glm::vec2 texCoord{0.0F, 0.0F};
+    if (assimpMesh.HasTextureCoords(0)) {
+      const aiVector3D &sourceTexCoord =
+          assimpMesh.mTextureCoords[0][vertexIndex];
+      texCoord = {sourceTexCoord.x, sourceTexCoord.y};
+    }
+
+    Vertex vertex;
+    vertex.position = sourcePosition;
+    vertex.staticPosition = transformedPosition3;
+    vertex.normal = normal;
+    vertex.staticNormal = staticNormal;
+    vertex.texCoord = texCoord;
+    mesh.vertices.push_back(vertex);
+  }
+
+  for (unsigned int boneIndex = 0; boneIndex < assimpMesh.mNumBones;
+       ++boneIndex) {
+    const aiBone &assimpBone = *assimpMesh.mBones[boneIndex];
+    const int engineBoneId = findOrCreateBone(model, assimpBone);
+    for (unsigned int weightIndex = 0; weightIndex < assimpBone.mNumWeights;
+         ++weightIndex) {
+      const aiVertexWeight &weight = assimpBone.mWeights[weightIndex];
+      if (weight.mVertexId < mesh.vertices.size()) {
+        addBoneWeight(mesh.vertices[weight.mVertexId], engineBoneId,
+                      weight.mWeight);
+      }
+    }
+  }
+
+  for (Vertex &vertex : mesh.vertices) {
+    normalizeBoneWeights(vertex);
+  }
+
+  for (unsigned int faceIndex = 0; faceIndex < assimpMesh.mNumFaces;
+       ++faceIndex) {
+    const aiFace &face = assimpMesh.mFaces[faceIndex];
+    if (face.mNumIndices != 3) {
+      continue;
+    }
+
+    mesh.indices.push_back(face.mIndices[0]);
+    mesh.indices.push_back(face.mIndices[1]);
+    mesh.indices.push_back(face.mIndices[2]);
+  }
+
+  mesh.isSkinned = assimpMesh.mNumBones > 0;
+  if (!mesh.vertices.empty() && !mesh.indices.empty()) {
+    model.meshes.push_back(std::move(mesh));
+  }
+}
+
+void appendNodeMeshes(const aiScene &scene, const aiNode &node,
+                      const glm::mat4 &parentTransform, Model &model) {
+  const glm::mat4 transform = parentTransform * toGlm(node.mTransformation);
+
+  for (unsigned int meshIndex = 0; meshIndex < node.mNumMeshes; ++meshIndex) {
+    const unsigned int sceneMeshIndex = node.mMeshes[meshIndex];
+    if (sceneMeshIndex < scene.mNumMeshes) {
+      appendMesh(*scene.mMeshes[sceneMeshIndex], transform, model);
+    }
+  }
+
+  for (unsigned int childIndex = 0; childIndex < node.mNumChildren;
+       ++childIndex) {
+    appendNodeMeshes(scene, *node.mChildren[childIndex], transform, model);
+  }
+}
+
+Model loadModel(const std::filesystem::path &path) {
+  Model model;
+  if (!std::filesystem::exists(path)) {
+    std::cerr << "Model file was not found: " << path << "\n";
+    return model;
+  }
+
+  Assimp::Importer importer;
+  const std::string modelPathString = path.string();
+  const aiScene *scene = importer.ReadFile(
+      modelPathString.c_str(),
+      aiProcess_Triangulate | aiProcess_JoinIdenticalVertices |
+          aiProcess_GenSmoothNormals | aiProcess_LimitBoneWeights |
+          aiProcess_ImproveCacheLocality);
+
+  if (scene == nullptr || scene->mRootNode == nullptr) {
+    std::cerr << "Failed to load model " << path << ": "
+              << importer.GetErrorString() << "\n";
+    return model;
+  }
+
+  model.rootNode = buildSkeletonNode(*scene->mRootNode);
+  model.globalInverseTransform =
+      glm::inverse(toGlm(scene->mRootNode->mTransformation));
+  model.animationCount = scene->mNumAnimations;
+  appendNodeMeshes(*scene, *scene->mRootNode, glm::mat4{1.0F}, model);
+
+  std::cout << "Loaded " << path << " with " << model.meshes.size()
+            << " mesh(es), " << model.bones.size() << " bone(s), and "
+            << model.animationCount << " embedded animation(s).\n";
+  return model;
+}
+
+AnimationClip loadAnimationClip(const std::filesystem::path &path,
+                                std::string fallbackName,
+                                bool retargetFirstFrameToBindPose = false,
+                                bool keepBindPoseTranslations = false) {
+  AnimationClip clip;
+  clip.retargetFirstFrameToBindPose = retargetFirstFrameToBindPose;
+  clip.keepBindPoseTranslations = keepBindPoseTranslations;
+  if (!std::filesystem::exists(path)) {
+    std::cerr << "Animation file was not found: " << path << "\n";
+    return clip;
+  }
+
+  Assimp::Importer importer;
+  const std::string animationPathString = path.string();
+  const aiScene *scene = importer.ReadFile(animationPathString.c_str(), 0);
+  if (scene == nullptr || scene->mNumAnimations == 0) {
+    std::cerr << "Failed to load animation " << path << ": "
+              << importer.GetErrorString() << "\n";
+    return clip;
+  }
+
+  const aiAnimation &animation = chooseAnimation(*scene, fallbackName);
+  clip.name = animation.mName.C_Str();
+  if (clip.name.empty()) {
+    clip.name = std::move(fallbackName);
+  }
+
+  clip.durationTicks = animation.mDuration;
+  clip.ticksPerSecond =
+      animation.mTicksPerSecond > 0.0 ? animation.mTicksPerSecond : 24.0;
+  clip.channels.reserve(animation.mNumChannels);
+
+  for (unsigned int channelIndex = 0; channelIndex < animation.mNumChannels;
+       ++channelIndex) {
+    const aiNodeAnim &assimpChannel = *animation.mChannels[channelIndex];
+    AnimationChannel channel;
+    channel.nodeName = normalizeAssimpName(assimpChannel.mNodeName.C_Str());
+
+    channel.positions.reserve(assimpChannel.mNumPositionKeys);
+    for (unsigned int keyIndex = 0; keyIndex < assimpChannel.mNumPositionKeys;
+         ++keyIndex) {
+      const aiVectorKey &key = assimpChannel.mPositionKeys[keyIndex];
+      channel.positions.push_back(VectorKey{key.mTime, toGlm(key.mValue)});
+    }
+
+    channel.rotations.reserve(assimpChannel.mNumRotationKeys);
+    for (unsigned int keyIndex = 0; keyIndex < assimpChannel.mNumRotationKeys;
+         ++keyIndex) {
+      const aiQuatKey &key = assimpChannel.mRotationKeys[keyIndex];
+      channel.rotations.push_back(QuaternionKey{key.mTime, toGlm(key.mValue)});
+    }
+
+    channel.scales.reserve(assimpChannel.mNumScalingKeys);
+    for (unsigned int keyIndex = 0; keyIndex < assimpChannel.mNumScalingKeys;
+         ++keyIndex) {
+      const aiVectorKey &key = assimpChannel.mScalingKeys[keyIndex];
+      channel.scales.push_back(VectorKey{key.mTime, toGlm(key.mValue)});
+    }
+
+    clip.channelIndexByNodeName[channel.nodeName] = clip.channels.size();
+    clip.channels.push_back(std::move(channel));
+  }
+
+  std::cout << "Loaded animation " << path << " as '" << clip.name << "' with "
+            << clip.channels.size() << " channel(s), " << clip.durationTicks
+            << " tick(s), " << clip.ticksPerSecond << " tick(s)/second.\n";
+  return clip;
+}
+
+float animationDurationSeconds(const AnimationClip &animation) {
+  if (!animation.isLoaded() || animation.ticksPerSecond <= 0.0) {
+    return 0.0F;
+  }
+
+  return static_cast<float>(animation.durationTicks / animation.ticksPerSecond);
+}
+
+std::size_t countMatchingAnimationChannels(const Model &model,
+                                           const AnimationClip &animation) {
+  std::size_t matchingChannels = 0;
+  for (const AnimationChannel &channel : animation.channels) {
+    if (model.boneIndexByName.find(channel.nodeName) !=
+        model.boneIndexByName.end()) {
+      ++matchingChannels;
+    }
+  }
+  return matchingChannels;
+}
+
+void printAnimationMatchReport(const Model &model,
+                               const AnimationClip &animation) {
+  if (!animation.isLoaded()) {
+    return;
+  }
+
+  const std::size_t matchingChannels =
+      countMatchingAnimationChannels(model, animation);
+  std::cout << "Animation '" << animation.name << "' matches "
+            << matchingChannels << "/" << animation.channels.size()
+            << " channel(s) to " << model.bones.size() << " model bone(s).\n";
+  if (matchingChannels == 0) {
+    std::cerr << "No animation channels matched model bones. Check that the "
+                 "FBX action uses the same Bip01 bone names as Bob.fbx.\n";
+  }
+}
+
+std::vector<unsigned char> readBinaryFile(const std::filesystem::path &path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    return {};
+  }
+
+  return {std::istreambuf_iterator<char>{file},
+          std::istreambuf_iterator<char>{}};
+}
+
+std::uint32_t readBigEndianU32(const std::vector<unsigned char> &bytes,
+                               std::size_t offset) {
+  return (static_cast<std::uint32_t>(bytes[offset]) << 24U) |
+         (static_cast<std::uint32_t>(bytes[offset + 1]) << 16U) |
+         (static_cast<std::uint32_t>(bytes[offset + 2]) << 8U) |
+         static_cast<std::uint32_t>(bytes[offset + 3]);
+}
+
+unsigned char paethPredictor(unsigned char left, unsigned char up,
+                             unsigned char upperLeft) {
+  const int predictor = static_cast<int>(left) + static_cast<int>(up) -
+                        static_cast<int>(upperLeft);
+  const int leftDistance = std::abs(predictor - static_cast<int>(left));
+  const int upDistance = std::abs(predictor - static_cast<int>(up));
+  const int upperLeftDistance =
+      std::abs(predictor - static_cast<int>(upperLeft));
+
+  if (leftDistance <= upDistance && leftDistance <= upperLeftDistance) {
+    return left;
+  }
+  if (upDistance <= upperLeftDistance) {
+    return up;
+  }
+  return upperLeft;
+}
+
+PngImage loadPngImage(const std::filesystem::path &path) {
+  constexpr std::array<unsigned char, 8> PngSignature{137, 80, 78, 71,
+                                                      13,  10, 26, 10};
+  PngImage image;
+  const std::vector<unsigned char> fileBytes = readBinaryFile(path);
+  if (fileBytes.size() < PngSignature.size() ||
+      !std::equal(PngSignature.begin(), PngSignature.end(),
+                  fileBytes.begin())) {
+    std::cerr << "Texture is not a PNG file: " << path << "\n";
+    return image;
+  }
+
+  int sourceChannels = 0;
+  std::vector<unsigned char> compressedPixels;
+  std::size_t offset = PngSignature.size();
+  while (offset + 12 <= fileBytes.size()) {
+    const std::uint32_t chunkLength = readBigEndianU32(fileBytes, offset);
+    offset += 4;
+    const std::string chunkType{
+        fileBytes.begin() + static_cast<std::ptrdiff_t>(offset),
+        fileBytes.begin() + static_cast<std::ptrdiff_t>(offset + 4)};
+    offset += 4;
+
+    if (offset + chunkLength + 4 > fileBytes.size()) {
+      std::cerr << "PNG chunk is truncated in texture: " << path << "\n";
+      return {};
+    }
+
+    if (chunkType == "IHDR") {
+      image.width = static_cast<int>(readBigEndianU32(fileBytes, offset));
+      image.height = static_cast<int>(readBigEndianU32(fileBytes, offset + 4));
+      const unsigned char bitDepth = fileBytes[offset + 8];
+      const unsigned char colorType = fileBytes[offset + 9];
+      const unsigned char compression = fileBytes[offset + 10];
+      const unsigned char filter = fileBytes[offset + 11];
+      const unsigned char interlace = fileBytes[offset + 12];
+
+      if (bitDepth != 8 || compression != 0 || filter != 0 || interlace != 0 ||
+          (colorType != 2 && colorType != 6)) {
+        std::cerr << "Unsupported PNG texture format: " << path
+                  << " (expected non-interlaced 8-bit RGB/RGBA).\n";
+        return {};
+      }
+      sourceChannels = colorType == 6 ? 4 : 3;
+    } else if (chunkType == "IDAT") {
+      compressedPixels.insert(
+          compressedPixels.end(),
+          fileBytes.begin() + static_cast<std::ptrdiff_t>(offset),
+          fileBytes.begin() +
+              static_cast<std::ptrdiff_t>(offset + chunkLength));
+    } else if (chunkType == "IEND") {
+      break;
+    }
+
+    offset += chunkLength + 4;
+  }
+
+  if (image.width <= 0 || image.height <= 0 || sourceChannels == 0 ||
+      compressedPixels.empty()) {
+    std::cerr << "PNG texture is missing image data: " << path << "\n";
+    return {};
+  }
+
+  const std::size_t rowBytes =
+      static_cast<std::size_t>(image.width) * sourceChannels;
+  std::vector<unsigned char> filteredPixels(
+      (rowBytes + 1) * static_cast<std::size_t>(image.height));
+  uLongf filteredSize = static_cast<uLongf>(filteredPixels.size());
+  const int zlibResult =
+      uncompress(filteredPixels.data(), &filteredSize, compressedPixels.data(),
+                 static_cast<uLong>(compressedPixels.size()));
+  if (zlibResult != Z_OK || filteredSize != filteredPixels.size()) {
+    std::cerr << "Failed to decompress PNG texture: " << path << "\n";
+    return {};
+  }
+
+  std::vector<unsigned char> sourcePixels(
+      rowBytes * static_cast<std::size_t>(image.height));
+  for (int y = 0; y < image.height; ++y) {
+    const std::size_t filteredRowOffset =
+        static_cast<std::size_t>(y) * (rowBytes + 1);
+    const unsigned char filterType = filteredPixels[filteredRowOffset];
+    const unsigned char *filteredRow =
+        filteredPixels.data() + filteredRowOffset + 1;
+    unsigned char *decodedRow =
+        sourcePixels.data() + static_cast<std::size_t>(y) * rowBytes;
+    const unsigned char *previousRow =
+        y > 0 ? sourcePixels.data() + static_cast<std::size_t>(y - 1) * rowBytes
+              : nullptr;
+
+    for (std::size_t x = 0; x < rowBytes; ++x) {
+      const unsigned char raw = filteredRow[x];
+      const unsigned char left = x >= static_cast<std::size_t>(sourceChannels)
+                                     ? decodedRow[x - sourceChannels]
+                                     : 0;
+      const unsigned char up = previousRow != nullptr ? previousRow[x] : 0;
+      const unsigned char upperLeft =
+          previousRow != nullptr &&
+                  x >= static_cast<std::size_t>(sourceChannels)
+              ? previousRow[x - sourceChannels]
+              : 0;
+
+      switch (filterType) {
+      case 0:
+        decodedRow[x] = raw;
+        break;
+      case 1:
+        decodedRow[x] = static_cast<unsigned char>(raw + left);
+        break;
+      case 2:
+        decodedRow[x] = static_cast<unsigned char>(raw + up);
+        break;
+      case 3:
+        decodedRow[x] = static_cast<unsigned char>(
+            raw + ((static_cast<int>(left) + static_cast<int>(up)) / 2));
+        break;
+      case 4:
+        decodedRow[x] = static_cast<unsigned char>(
+            raw + paethPredictor(left, up, upperLeft));
+        break;
+      default:
+        std::cerr << "Unsupported PNG filter in texture: " << path << "\n";
+        return {};
+      }
+    }
+  }
+
+  image.pixels.resize(static_cast<std::size_t>(image.width) * image.height * 4);
+  for (int y = 0; y < image.height; ++y) {
+    const int flippedY = image.height - 1 - y;
+    for (int x = 0; x < image.width; ++x) {
+      const std::size_t sourceOffset =
+          (static_cast<std::size_t>(y) * image.width + x) * sourceChannels;
+      const std::size_t targetOffset =
+          (static_cast<std::size_t>(flippedY) * image.width + x) * 4;
+      image.pixels[targetOffset] = sourcePixels[sourceOffset];
+      image.pixels[targetOffset + 1] = sourcePixels[sourceOffset + 1];
+      image.pixels[targetOffset + 2] = sourcePixels[sourceOffset + 2];
+      image.pixels[targetOffset + 3] =
+          sourceChannels == 4 ? sourcePixels[sourceOffset + 3] : 255;
+    }
+  }
+  return image;
+}
+
+Texture2D loadTexture2D(const std::filesystem::path &path) {
+  Texture2D texture;
+  if (!std::filesystem::exists(path)) {
+    std::cerr << "Texture file was not found: " << path << "\n";
+    return texture;
+  }
+
+  const PngImage image = loadPngImage(path);
+  if (!image.isLoaded()) {
+    return texture;
+  }
+
+  glGenTextures(1, &texture.id);
+  glBindTexture(GL_TEXTURE_2D, texture.id);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, image.width, image.height, 0, GL_RGBA,
+               GL_UNSIGNED_BYTE, image.pixels.data());
+  glBindTexture(GL_TEXTURE_2D, 0);
+
+  texture.width = image.width;
+  texture.height = image.height;
+  std::cout << "Loaded texture " << path << " (" << texture.width << "x"
+            << texture.height << ").\n";
+  return texture;
+}
+
+std::string trimWhitespace(std::string value) {
+  const auto first =
+      std::find_if_not(value.begin(), value.end(), [](unsigned char character) {
+        return std::isspace(character) != 0;
+      });
+  const auto last = std::find_if_not(value.rbegin(), value.rend(),
+                                     [](unsigned char character) {
+                                       return std::isspace(character) != 0;
+                                     })
+                        .base();
+  if (first >= last) {
+    return {};
+  }
+  return {first, last};
+}
+
+std::string stripTomlComment(const std::string &line) {
+  const std::size_t commentPosition = line.find('#');
+  return commentPosition == std::string::npos ? line
+                                              : line.substr(0, commentPosition);
+}
+
+std::vector<int> parseTomlIntegerArray(const std::vector<std::string> &lines,
+                                       std::size_t &lineIndex) {
+  std::vector<int> values;
+  std::string combined = stripTomlComment(lines[lineIndex]);
+  while (combined.find(']') == std::string::npos &&
+         lineIndex + 1 < lines.size()) {
+    ++lineIndex;
+    combined += stripTomlComment(lines[lineIndex]);
+  }
+
+  std::string number;
+  for (char character : combined) {
+    if (std::isdigit(static_cast<unsigned char>(character)) != 0 ||
+        character == '-') {
+      number.push_back(character);
+      continue;
+    }
+
+    if (!number.empty()) {
+      values.push_back(std::stoi(number));
+      number.clear();
+    }
+  }
+  if (!number.empty()) {
+    values.push_back(std::stoi(number));
+  }
+  return values;
+}
+
+std::string parseTomlStringValue(std::string value) {
+  value = trimWhitespace(std::move(value));
+  if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+    value = value.substr(1, value.size() - 2);
+  }
+  return value;
+}
+
+std::vector<float> parseTomlFloatArray(const std::vector<std::string> &lines,
+                                       std::size_t &lineIndex) {
+  std::vector<float> values;
+  std::string combined = stripTomlComment(lines[lineIndex]);
+  while (combined.find(']') == std::string::npos &&
+         lineIndex + 1 < lines.size()) {
+    ++lineIndex;
+    combined += stripTomlComment(lines[lineIndex]);
+  }
+
+  std::string number;
+  for (char character : combined) {
+    if (std::isdigit(static_cast<unsigned char>(character)) != 0 ||
+        character == '-' || character == '+' || character == '.') {
+      number.push_back(character);
+      continue;
+    }
+
+    if (!number.empty()) {
+      values.push_back(std::stof(number));
+      number.clear();
+    }
+  }
+  if (!number.empty()) {
+    values.push_back(std::stof(number));
+  }
+  return values;
+}
+
+CollisionShapeType collisionShapeTypeFromString(const std::string &value) {
+  if (value == "full_tile") {
+    return CollisionShapeType::FullTile;
+  }
+  if (value == "floor") {
+    return CollisionShapeType::Floor;
+  }
+  if (value == "aabb") {
+    return CollisionShapeType::Aabb;
+  }
+  if (value == "circle") {
+    return CollisionShapeType::Circle;
+  }
+  if (value == "diamond") {
+    return CollisionShapeType::Diamond;
+  }
+  if (value == "segment") {
+    return CollisionShapeType::Segment;
+  }
+  return CollisionShapeType::None;
+}
+
+void parseTileCollisionMetadata(
+    const std::filesystem::path &metadataPath,
+    std::unordered_map<std::string, TileCollisionDefinition> &definitions) {
+  std::ifstream file(metadataPath);
+  if (!file) {
+    return;
+  }
+
+  std::vector<std::string> lines;
+  std::string line;
+  while (std::getline(file, line)) {
+    lines.push_back(line);
+  }
+
+  std::string currentTileName;
+  CollisionShape currentShape;
+  bool hasCurrentShape = false;
+
+  auto commitShape = [&]() {
+    if (currentTileName.empty() || !hasCurrentShape ||
+        currentShape.type == CollisionShapeType::None) {
+      hasCurrentShape = false;
+      return;
+    }
+    definitions[currentTileName].shapes.push_back(currentShape);
+    currentShape = CollisionShape{};
+    hasCurrentShape = false;
+  };
+
+  for (std::size_t lineIndex = 0; lineIndex < lines.size(); ++lineIndex) {
+    const std::string trimmed =
+        trimWhitespace(stripTomlComment(lines[lineIndex]));
+    if (trimmed.empty()) {
+      continue;
+    }
+
+    if (trimmed == "[[tiles]]") {
+      commitShape();
+      currentTileName.clear();
+      continue;
+    }
+    if (trimmed == "[[tiles.shapes]]") {
+      commitShape();
+      currentShape = CollisionShape{};
+      hasCurrentShape = true;
+      continue;
+    }
+
+    const std::size_t equalsPosition = trimmed.find('=');
+    if (equalsPosition == std::string::npos) {
+      continue;
+    }
+
+    const std::string key = trimWhitespace(trimmed.substr(0, equalsPosition));
+    const std::string value =
+        trimWhitespace(trimmed.substr(equalsPosition + 1));
+    if (key == "name") {
+      commitShape();
+      currentTileName = parseTomlStringValue(value);
+      definitions.try_emplace(currentTileName);
+    } else if (hasCurrentShape && key == "type") {
+      currentShape.type =
+          collisionShapeTypeFromString(parseTomlStringValue(value));
+    } else if (hasCurrentShape && key == "min") {
+      const std::vector<float> values = parseTomlFloatArray(lines, lineIndex);
+      if (values.size() >= 2) {
+        currentShape.min = {values[0], values[1]};
+      }
+    } else if (hasCurrentShape && key == "max") {
+      const std::vector<float> values = parseTomlFloatArray(lines, lineIndex);
+      if (values.size() >= 2) {
+        currentShape.max = {values[0], values[1]};
+      }
+    } else if (hasCurrentShape && key == "center") {
+      const std::vector<float> values = parseTomlFloatArray(lines, lineIndex);
+      if (values.size() >= 2) {
+        currentShape.center = {values[0], values[1]};
+      }
+    } else if (hasCurrentShape && key == "radius") {
+      currentShape.radius = std::stof(value);
+    } else if (hasCurrentShape && key == "start") {
+      const std::vector<float> values = parseTomlFloatArray(lines, lineIndex);
+      if (values.size() >= 2) {
+        currentShape.start = {values[0], values[1]};
+      }
+    } else if (hasCurrentShape && key == "end") {
+      const std::vector<float> values = parseTomlFloatArray(lines, lineIndex);
+      if (values.size() >= 2) {
+        currentShape.end = {values[0], values[1]};
+      }
+    } else if (hasCurrentShape && key == "thickness") {
+      currentShape.thickness = std::stof(value);
+    }
+  }
+
+  commitShape();
+}
+
+void parseTileMetadata(const std::filesystem::path &metadataPath,
+                       std::size_t atlasIndex,
+                       std::vector<TileDefinition> &tiles) {
+  std::ifstream file(metadataPath);
+  if (!file) {
+    std::cerr << "Tile metadata file was not found: " << metadataPath << "\n";
+    return;
+  }
+
+  std::vector<std::string> lines;
+  std::string line;
+  while (std::getline(file, line)) {
+    lines.push_back(line);
+  }
+
+  TileDefinition currentTile;
+  bool hasCurrentTile = false;
+  auto commitTile = [&]() {
+    if (!hasCurrentTile || currentTile.name.empty()) {
+      return;
+    }
+    if (currentTile.size.x <= 0 || currentTile.size.y <= 0 ||
+        currentTile.frameSize.x <= 0 || currentTile.frameSize.y <= 0) {
+      std::cerr << "Skipping incomplete tile metadata entry '"
+                << currentTile.name << "' from " << metadataPath << "\n";
+      return;
+    }
+    tiles.push_back(currentTile);
+  };
+
+  for (std::size_t lineIndex = 0; lineIndex < lines.size(); ++lineIndex) {
+    const std::string trimmed =
+        trimWhitespace(stripTomlComment(lines[lineIndex]));
+    if (trimmed.empty()) {
+      continue;
+    }
+
+    if (trimmed.front() == '[' && trimmed.back() == ']') {
+      commitTile();
+      currentTile = TileDefinition{};
+      currentTile.name = trimmed.substr(1, trimmed.size() - 2);
+      currentTile.atlasIndex = atlasIndex;
+      hasCurrentTile = true;
+      continue;
+    }
+
+    const std::size_t equalsPosition = trimmed.find('=');
+    if (!hasCurrentTile || equalsPosition == std::string::npos) {
+      continue;
+    }
+
+    const std::string key = trimWhitespace(trimmed.substr(0, equalsPosition));
+    std::vector<int> values = parseTomlIntegerArray(lines, lineIndex);
+    if (values.size() < 2) {
+      continue;
+    }
+
+    if (key == "pos") {
+      currentTile.position = {values[0], values[1]};
+    } else if (key == "size") {
+      currentTile.size = {values[0], values[1]};
+    } else if (key == "frame_offset") {
+      currentTile.frameOffset = {values[0], values[1]};
+    } else if (key == "frame_size") {
+      currentTile.frameSize = {values[0], values[1]};
+    }
+  }
+
+  commitTile();
+}
+
+std::size_t findTileIndexByName(const TileSet &tileSet,
+                                const std::string &tileName) {
+  for (std::size_t tileIndex = 0; tileIndex < tileSet.tiles.size();
+       ++tileIndex) {
+    if (tileSet.tiles[tileIndex].name == tileName) {
+      return tileIndex;
+    }
+  }
+  return std::numeric_limits<std::size_t>::max();
+}
+
+std::size_t findTileIndexBySavedReference(const TileSet &tileSet,
+                                          const std::string &tileName,
+                                          const std::string &atlasName) {
+  for (std::size_t tileIndex = 0; tileIndex < tileSet.tiles.size();
+       ++tileIndex) {
+    const TileDefinition &tile = tileSet.tiles[tileIndex];
+    if (tile.name != tileName || tile.atlasIndex >= tileSet.atlases.size()) {
+      continue;
+    }
+    if (tileSet.atlases[tile.atlasIndex].imagePath.filename().string() ==
+        atlasName) {
+      return tileIndex;
+    }
+  }
+
+  return findTileIndexByName(tileSet, tileName);
+}
+
+glm::vec3 mapTileAlignmentWorldOffset(float cellSize) {
+  const float safeCellSize =
+      cellSize > 0.0F ? cellSize : FallbackGroundTileCellSize;
+  return {
+      (TileMapScreenRightAlignmentCells - TileMapScreenUpAlignmentCells) *
+          safeCellSize,
+      0.0F,
+      -(TileMapScreenRightAlignmentCells + TileMapScreenUpAlignmentCells) *
+          safeCellSize};
+}
+
+float groundTileCellSizeForTile(const TileDefinition &tile) {
+  const int pixelWidth = tile.size.x > 0 ? tile.size.x : tile.frameSize.x;
+  const float spriteWidth =
+      static_cast<float>(pixelWidth) * TileSpriteWorldScale;
+  const float projectedGroundCellWidth = std::sqrt(2.0F);
+  const float cellSize = spriteWidth / projectedGroundCellWidth;
+  return cellSize > 0.0F ? cellSize : FallbackGroundTileCellSize;
+}
+
+void buildGroundTilePlacements(TileSet &tileSet) {
+  tileSet.groundTiles.clear();
+  tileSet.groundTileCellSize = FallbackGroundTileCellSize;
+  const std::size_t groundTileIndex =
+      findTileIndexByName(tileSet, GroundTileName);
+  if (groundTileIndex == std::numeric_limits<std::size_t>::max()) {
+    std::cerr << "Ground tile '" << GroundTileName
+              << "' was not found in the loaded tile metadata.\n";
+    return;
+  }
+
+  tileSet.groundTileCellSize =
+      groundTileCellSizeForTile(tileSet.tiles[groundTileIndex]);
+
+  for (int z = -GroundTileHalfSize; z <= GroundTileHalfSize; ++z) {
+    for (int x = -GroundTileHalfSize; x <= GroundTileHalfSize; ++x) {
+      tileSet.groundTiles.push_back(PlacedTile{
+          groundTileIndex,
+          {static_cast<float>(x) * tileSet.groundTileCellSize, GroundTileLayerY,
+           static_cast<float>(z) * tileSet.groundTileCellSize},
+          GroundWorldLevel,
+          0});
+    }
+
+  }
+}
+
+struct PlacedTileDrawOrderLess {
+  bool operator()(const PlacedTile &left, const PlacedTile &right) const {
+    if (left.level != right.level) {
+      return left.level < right.level;
+    }
+    if (left.layer != right.layer) {
+      return left.layer < right.layer;
+    }
+    const float leftDepth = left.position.x + left.position.z;
+    const float rightDepth = right.position.x + right.position.z;
+    if (leftDepth != rightDepth) {
+      return leftDepth < rightDepth;
+    }
+    if (left.position.z != right.position.z) {
+      return left.position.z < right.position.z;
+    }
+    return left.tileIndex < right.tileIndex;
+  }
+};
+
+struct SavedMapTileParseState {
+  int level = 0;
+  int layer = 0;
+  int x = 0;
+  int z = 0;
+  std::string tileName;
+  std::string atlasName;
+  bool hasTile = false;
+};
+
+struct SavedMapTileLoader {
+  std::filesystem::path mapPath;
+  TileSet &tileSet;
+  SavedMapTileParseState currentTile;
+
+  void resetCurrentTile() {
+    currentTile = SavedMapTileParseState{};
+    currentTile.hasTile = true;
+  }
+
+  void appendCurrentTile() {
+    if (!currentTile.hasTile || currentTile.tileName.empty()) {
+      return;
+    }
+
+    const std::size_t tileIndex = findTileIndexBySavedReference(
+        tileSet, currentTile.tileName, currentTile.atlasName);
+    if (tileIndex == std::numeric_limits<std::size_t>::max()) {
+      std::cerr << "Saved map tile '" << currentTile.tileName
+                << "' was not found in loaded tile metadata.\n";
+      return;
+    }
+
+    const glm::vec3 alignmentOffset =
+        mapTileAlignmentWorldOffset(tileSet.groundTileCellSize);
+    const glm::vec3 worldPosition{
+        static_cast<float>(currentTile.x) * tileSet.groundTileCellSize +
+            alignmentOffset.x,
+        static_cast<float>(currentTile.level) * WorldLevelHeight,
+        static_cast<float>(currentTile.z) * tileSet.groundTileCellSize +
+            alignmentOffset.z};
+    tileSet.mapTiles.push_back(PlacedTile{tileIndex, worldPosition,
+                                           currentTile.level,
+                                           currentTile.layer});
+  }
+
+  void parseKeyValue(const std::string &key, const std::string &value) {
+    if (key == "level") {
+      currentTile.level = std::stoi(value);
+    } else if (key == "layer") {
+      currentTile.layer = std::stoi(value);
+    } else if (key == "x") {
+      currentTile.x = std::stoi(value);
+    } else if (key == "z") {
+      currentTile.z = std::stoi(value);
+    } else if (key == "name") {
+      currentTile.tileName = parseTomlStringValue(value);
+    } else if (key == "atlas") {
+      currentTile.atlasName = parseTomlStringValue(value);
+    }
+  }
+
+  void load() {
+    tileSet.mapTiles.clear();
+    std::ifstream file(mapPath);
+    if (!file) {
+      return;
+    }
+
+    std::string line;
+    while (std::getline(file, line)) {
+      const std::string trimmed = trimWhitespace(stripTomlComment(line));
+      if (trimmed.empty()) {
+        continue;
+      }
+      if (trimmed == "[[tiles]]") {
+        appendCurrentTile();
+        resetCurrentTile();
+        continue;
+      }
+
+      const std::size_t equalsPosition = trimmed.find('=');
+      if (!currentTile.hasTile || equalsPosition == std::string::npos) {
+        continue;
+      }
+
+      const std::string key = trimWhitespace(trimmed.substr(0, equalsPosition));
+      const std::string value =
+          trimWhitespace(trimmed.substr(equalsPosition + 1));
+      parseKeyValue(key, value);
+    }
+
+    appendCurrentTile();
+    std::sort(tileSet.mapTiles.begin(), tileSet.mapTiles.end(),
+              PlacedTileDrawOrderLess{});
+    std::cout << "Loaded " << tileSet.mapTiles.size()
+              << " saved map tile(s) from " << mapPath << ".\n";
+  }
+};
+
+void loadDefaultSavedMapTiles(TileSet &tileSet) {
+  SavedMapTileLoader{DefaultMapPath, tileSet, {}}.load();
+}
+
+TileSet loadTileSet(const std::filesystem::path &directory) {
+  TileSet tileSet;
+  if (!std::filesystem::exists(directory)) {
+    std::cerr << "Tile texture pack directory was not found: " << directory
+              << "\n";
+    return tileSet;
+  }
+
+  std::vector<std::filesystem::path> imagePaths;
+  for (const std::filesystem::directory_entry &entry :
+       std::filesystem::directory_iterator(directory)) {
+    if (entry.is_regular_file() && entry.path().extension() == ".png") {
+      imagePaths.push_back(entry.path());
+    }
+  }
+  std::sort(imagePaths.begin(), imagePaths.end());
+
+  for (const std::filesystem::path &imagePath : imagePaths) {
+    Texture2D texture = loadTexture2D(imagePath);
+    if (!texture.isLoaded()) {
+      continue;
+    }
+
+    const std::size_t atlasIndex = tileSet.atlases.size();
+    tileSet.atlases.push_back(TileAtlas{texture, imagePath});
+
+    const std::filesystem::path metadataPath =
+        imagePath.parent_path() / (imagePath.stem().string() + ".toml");
+    parseTileMetadata(metadataPath, atlasIndex, tileSet.tiles);
+  }
+
+  parseTileCollisionMetadata(directory / "collisions.toml",
+                             tileSet.collisionDefinitions);
+
+  buildGroundTilePlacements(tileSet);
+  loadDefaultSavedMapTiles(tileSet);
+  std::size_t collisionShapeCount = 0;
+  for (const auto &entry : tileSet.collisionDefinitions) {
+    collisionShapeCount += entry.second.shapes.size();
+  }
+  std::cout << "Loaded " << tileSet.tiles.size() << " tile definition(s) from "
+            << tileSet.atlases.size() << " atlas texture(s), "
+            << tileSet.mapTiles.size() << " saved map tile(s), plus "
+            << collisionShapeCount << " collision shape(s).\n";
+  return tileSet;
+}
+
+void errorCallback(int error, const char *description) {
+  std::cerr << "GLFW error " << error << ": " << description << '\n';
+}
+
+void framebufferSizeCallback(GLFWwindow *, int width, int height) {
+  glViewport(0, 0, width, height);
+}
+
+void scrollCallback(GLFWwindow *window, double, double yOffset) {
+  auto *input = static_cast<InputState *>(glfwGetWindowUserPointer(window));
+  if (input == nullptr) {
+    return;
+  }
+
+  input->camera.zoom(static_cast<float>(yOffset));
+}
+
+glm::vec3 screenDirectionToWorldDirection(float screenRight, float screenUp) {
+  const glm::vec3 worldScreenRight =
+      glm::normalize(glm::vec3{1.0F, 0.0F, -1.0F});
+  const glm::vec3 worldScreenUp = glm::normalize(glm::vec3{-1.0F, 0.0F, -1.0F});
+  return worldScreenRight * screenRight + worldScreenUp * screenUp;
+}
+
+bool isIdleTurnAnimationState(CharacterAnimationState animationState) {
+  switch (animationState) {
+  case CharacterAnimationState::IdleTurn45L:
+  case CharacterAnimationState::IdleTurn45R:
+  case CharacterAnimationState::IdleTurn90L:
+  case CharacterAnimationState::IdleTurn90R:
+  case CharacterAnimationState::IdleTurn180L:
+  case CharacterAnimationState::IdleTurn180R:
+    return true;
+  default:
+    return false;
+  }
+}
+
+float signedAngleBetweenDirections(const glm::vec3 &from, const glm::vec3 &to) {
+  const glm::vec2 fromDirection = glm::normalize(glm::vec2{from.x, from.z});
+  const glm::vec2 toDirection = glm::normalize(glm::vec2{to.x, to.z});
+  const float dot =
+      std::clamp(glm::dot(fromDirection, toDirection), -1.0F, 1.0F);
+  const float cross =
+      fromDirection.y * toDirection.x - fromDirection.x * toDirection.y;
+  return std::atan2(cross, dot);
+}
+
+glm::vec3 rotateDirectionY(const glm::vec3 &direction, float radians) {
+  const float sine = std::sin(radians);
+  const float cosine = std::cos(radians);
+  return glm::normalize(glm::vec3{direction.x * cosine + direction.z * sine,
+                                  0.0F,
+                                  direction.z * cosine - direction.x * sine});
+}
+
+void turnCharacterFacingToward(Character &character,
+                               const glm::vec3 &targetFacing, float deltaTime) {
+  const float turnAngle =
+      signedAngleBetweenDirections(character.facing, targetFacing);
+  const float maxTurnRadians =
+      glm::radians(CharacterMovingTurnAngularSpeedDegrees) * deltaTime;
+  if (std::abs(turnAngle) <= maxTurnRadians) {
+    character.facing = targetFacing;
+    return;
+  }
+
+  character.facing = rotateDirectionY(
+      character.facing, std::clamp(turnAngle, -maxTurnRadians, maxTurnRadians));
+}
+
+CharacterAnimationState idleTurnAnimationStateForAngle(float signedAngle) {
+  const bool turnLeft = signedAngle > 0.0F;
+  const float angleDegrees = std::abs(glm::degrees(signedAngle));
+  if (angleDegrees < 67.5F) {
+    return turnLeft ? CharacterAnimationState::IdleTurn45L
+                    : CharacterAnimationState::IdleTurn45R;
+  }
+  if (angleDegrees < 135.0F) {
+    return turnLeft ? CharacterAnimationState::IdleTurn90L
+                    : CharacterAnimationState::IdleTurn90R;
+  }
+  return turnLeft ? CharacterAnimationState::IdleTurn180L
+                  : CharacterAnimationState::IdleTurn180R;
+}
+
+void clearCharacterAnimationBlend(Character &character) {
+  character.animationBlendTime = 0.0F;
+  character.animationBlendDuration = 0.0F;
+  character.animationBlendSourceTime = character.animationTime;
+  character.animationBlendSourceState = character.animationState;
+}
+
+void beginCharacterAnimationBlend(Character &character,
+                                  CharacterAnimationState nextState,
+                                  float nextAnimationTime,
+                                  float blendDuration) {
+  if (blendDuration <= std::numeric_limits<float>::epsilon()) {
+    character.animationState = nextState;
+    character.animationTime = nextAnimationTime;
+    clearCharacterAnimationBlend(character);
+    return;
+  }
+
+  character.animationBlendSourceState = character.animationState;
+  character.animationBlendSourceTime = character.animationTime;
+  character.animationBlendTime = 0.0F;
+  character.animationBlendDuration = blendDuration;
+  character.animationState = nextState;
+  character.animationTime = nextAnimationTime;
+}
+
+void advanceCharacterAnimationBlend(Character &character, float deltaTime) {
+  if (!character.isAnimationBlending()) {
+    return;
+  }
+
+  character.animationBlendTime =
+      std::min(character.animationBlendTime + deltaTime,
+               character.animationBlendDuration);
+}
+
+float smoothStep(float progress) {
+  const float clampedProgress = std::clamp(progress, 0.0F, 1.0F);
+  return clampedProgress * clampedProgress * (3.0F - 2.0F * clampedProgress);
+}
+
+float idleToWalkAccelerationScale(const Character &character,
+                                  const AnimationClip &idleToWalkAnimation) {
+  if (character.animationState != CharacterAnimationState::IdleToWalk) {
+    return 1.0F;
+  }
+
+  const float transitionDuration =
+      animationDurationSeconds(idleToWalkAnimation);
+  if (transitionDuration <= std::numeric_limits<float>::epsilon()) {
+    return 1.0F;
+  }
+
+  const float transitionProgress = character.animationTime / transitionDuration;
+  return glm::mix(CharacterStartAccelerationMinScale, 1.0F,
+                  smoothStep(transitionProgress));
+}
+
+float walkToStopCoastScale(const Character &character,
+                           const AnimationClip &walkToStopAnimation) {
+  if (character.animationState != CharacterAnimationState::WalkToStop) {
+    return 0.0F;
+  }
+
+  const float transitionDuration =
+      animationDurationSeconds(walkToStopAnimation);
+  if (transitionDuration <= std::numeric_limits<float>::epsilon()) {
+    return 0.0F;
+  }
+
+  const float transitionProgress =
+      std::clamp(character.animationTime / transitionDuration, 0.0F, 1.0F);
+  const float remainingTransition = 1.0F - transitionProgress;
+  return CharacterStopCoastSpeedScale * remainingTransition *
+         remainingTransition;
+}
+
+const AnimationClip &
+idleTurnAnimationForState(CharacterAnimationState animationState,
+                          const CharacterAnimationClips &animations);
+
+const AnimationClip &
+clipForAnimationState(CharacterAnimationState animationState,
+                      const CharacterAnimationClips &animations);
+
+float worldYForLevel(int level) {
+  return static_cast<float>(level) * WorldLevelHeight;
+}
+
+bool hasGroundTileAtPosition(const TileSet &tileSet,
+                             const glm::vec3 &position) {
+  if (tileSet.groundTiles.empty()) {
+    return true;
+  }
+
+  const float cellSize = tileSet.groundTileCellSize > 0.0F
+                             ? tileSet.groundTileCellSize
+                             : FallbackGroundTileCellSize;
+  const float halfCellSize = cellSize * 0.5F;
+  for (const PlacedTile &placedTile : tileSet.groundTiles) {
+    if (std::abs(position.x - placedTile.position.x) <= halfCellSize &&
+        std::abs(position.z - placedTile.position.z) <= halfCellSize) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool tileHasFloorCollision(const TileSet &tileSet, const TileDefinition &tile) {
+  const auto collisionIterator = tileSet.collisionDefinitions.find(tile.name);
+  if (collisionIterator == tileSet.collisionDefinitions.end()) {
+    return false;
+  }
+
+  return std::any_of(collisionIterator->second.shapes.begin(),
+                     collisionIterator->second.shapes.end(),
+                     [](const CollisionShape &shape) {
+                       return shape.type == CollisionShapeType::Floor;
+                     });
+}
+
+bool tileHasBlockingCollision(const TileSet &tileSet,
+                              const TileDefinition &tile) {
+  const auto collisionIterator = tileSet.collisionDefinitions.find(tile.name);
+  if (collisionIterator == tileSet.collisionDefinitions.end()) {
+    return false;
+  }
+
+  return std::any_of(collisionIterator->second.shapes.begin(),
+                     collisionIterator->second.shapes.end(),
+                     [](const CollisionShape &shape) {
+                       return shape.type != CollisionShapeType::Floor &&
+                              shape.type != CollisionShapeType::None;
+                     });
+}
+
+float safeGroundTileCellSize(const TileSet &tileSet) {
+  return tileSet.groundTileCellSize > 0.0F ? tileSet.groundTileCellSize
+                                           : FallbackGroundTileCellSize;
+}
+
+float projectedTileCellCenterYPixels(const TileDefinition &tile) {
+  const float spriteWidth = static_cast<float>(tile.size.x > 0 ? tile.size.x
+                                                               : tile.frameSize.x);
+  const float spriteHeight = static_cast<float>(tile.size.y > 0 ? tile.size.y
+                                                                : tile.frameSize.y);
+  const float diamondHeight = spriteWidth * 0.5F;
+  return std::max(diamondHeight * 0.5F, spriteHeight - diamondHeight * 0.5F);
+}
+
+glm::vec2 spriteCollisionPointForWorldPosition(const TileSet &tileSet,
+                                               const TileDefinition &tile,
+                                               const PlacedTile &placedTile,
+                                               const glm::vec3 &position) {
+  const float spriteWidth = static_cast<float>(tile.size.x > 0 ? tile.size.x
+                                                               : tile.frameSize.x);
+  const float spriteHeight = static_cast<float>(tile.size.y > 0 ? tile.size.y
+                                                                : tile.frameSize.y);
+  const float cellSize = safeGroundTileCellSize(tileSet);
+  const float localCellX = (position.x - placedTile.position.x) / cellSize;
+  const float localCellZ = (position.z - placedTile.position.z) / cellSize;
+  const float diamondHeight = spriteWidth * 0.5F;
+  const float spriteX = spriteWidth * 0.5F +
+                        (localCellX - localCellZ) * spriteWidth * 0.5F;
+  const float spriteY = projectedTileCellCenterYPixels(tile) +
+                        (localCellX + localCellZ) * diamondHeight * 0.5F;
+  return {spriteX / spriteWidth, spriteY / spriteHeight};
+}
+
+float squaredDistanceToSegment(const glm::vec2 &point, const glm::vec2 &start,
+                               const glm::vec2 &end) {
+  const glm::vec2 segment = end - start;
+  const float segmentLengthSquared = glm::dot(segment, segment);
+  if (segmentLengthSquared <= std::numeric_limits<float>::epsilon()) {
+    return glm::dot(point - start, point - start);
+  }
+
+  const float projection =
+      std::clamp(glm::dot(point - start, segment) / segmentLengthSquared, 0.0F,
+                 1.0F);
+  const glm::vec2 closest = start + segment * projection;
+  return glm::dot(point - closest, point - closest);
+}
+
+bool collisionShapeContainsSpritePoint(const CollisionShape &shape,
+                                       const TileDefinition &tile,
+                                       const glm::vec2 &point) {
+  switch (shape.type) {
+  case CollisionShapeType::FullTile:
+  case CollisionShapeType::Floor:
+  case CollisionShapeType::Aabb:
+    return point.x >= shape.min.x && point.x <= shape.max.x &&
+           point.y >= shape.min.y && point.y <= shape.max.y;
+  case CollisionShapeType::Diamond: {
+    const glm::vec2 center = (shape.min + shape.max) * 0.5F;
+    const glm::vec2 halfSize = (shape.max - shape.min) * 0.5F;
+    if (halfSize.x <= std::numeric_limits<float>::epsilon() ||
+        halfSize.y <= std::numeric_limits<float>::epsilon()) {
+      return false;
+    }
+    const glm::vec2 relative = glm::abs(point - center);
+    return relative.x / halfSize.x + relative.y / halfSize.y <= 1.0F;
+  }
+  case CollisionShapeType::Circle: {
+    const float spriteWidth = static_cast<float>(tile.size.x > 0 ? tile.size.x
+                                                                 : tile.frameSize.x);
+    const float spriteHeight = static_cast<float>(tile.size.y > 0 ? tile.size.y
+                                                                  : tile.frameSize.y);
+    const glm::vec2 pixelPoint{point.x * spriteWidth, point.y * spriteHeight};
+    const glm::vec2 pixelCenter{shape.center.x * spriteWidth,
+                                shape.center.y * spriteHeight};
+    const float pixelRadius =
+        shape.radius * std::min(spriteWidth, spriteHeight);
+    return glm::distance(pixelPoint, pixelCenter) <= pixelRadius;
+  }
+  case CollisionShapeType::Segment: {
+    const float spriteWidth = static_cast<float>(tile.size.x > 0 ? tile.size.x
+                                                                 : tile.frameSize.x);
+    const float spriteHeight = static_cast<float>(tile.size.y > 0 ? tile.size.y
+                                                                  : tile.frameSize.y);
+    const glm::vec2 pixelPoint{point.x * spriteWidth, point.y * spriteHeight};
+    const glm::vec2 pixelStart{shape.start.x * spriteWidth,
+                               shape.start.y * spriteHeight};
+    const glm::vec2 pixelEnd{shape.end.x * spriteWidth,
+                             shape.end.y * spriteHeight};
+    const float halfThickness =
+        shape.thickness * std::min(spriteWidth, spriteHeight) * 0.5F;
+    return squaredDistanceToSegment(pixelPoint, pixelStart, pixelEnd) <=
+           halfThickness * halfThickness;
+  }
+  case CollisionShapeType::None:
+    return false;
+  }
+
+  return false;
+}
+
+bool collisionShapeContainsWorldPosition(const TileSet &tileSet,
+                                         const TileDefinition &tile,
+                                         const PlacedTile &placedTile,
+                                         const CollisionShape &shape,
+                                         const glm::vec3 &position) {
+  return collisionShapeContainsSpritePoint(
+      shape, tile,
+      spriteCollisionPointForWorldPosition(tileSet, tile, placedTile, position));
+}
+
+bool collisionDefinitionContainsWorldPosition(
+    const TileSet &tileSet, const TileDefinition &tile,
+    const PlacedTile &placedTile, const TileCollisionDefinition &definition,
+    const glm::vec3 &position, CollisionShapeType requiredType,
+    float sampleRadius) {
+  const std::array<glm::vec3, 5> samplePositions{
+      position, position + glm::vec3{sampleRadius, 0.0F, 0.0F},
+      position - glm::vec3{sampleRadius, 0.0F, 0.0F},
+      position + glm::vec3{0.0F, 0.0F, sampleRadius},
+      position - glm::vec3{0.0F, 0.0F, sampleRadius}};
+
+  for (const CollisionShape &shape : definition.shapes) {
+    if (shape.type == CollisionShapeType::None) {
+      continue;
+    }
+    if (requiredType == CollisionShapeType::Floor) {
+      if (shape.type != CollisionShapeType::Floor) {
+        continue;
+      }
+    } else if (shape.type == CollisionShapeType::Floor) {
+      continue;
+    }
+
+    for (const glm::vec3 &samplePosition : samplePositions) {
+      if (collisionShapeContainsWorldPosition(tileSet, tile, placedTile, shape,
+                                             samplePosition)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+bool isInsidePlacedTileCell(const TileSet &tileSet,
+                            const PlacedTile &placedTile,
+                            const glm::vec3 &position, float padding) {
+  const float cellSize = safeGroundTileCellSize(tileSet);
+  const float halfCellSize = cellSize * 0.5F + padding;
+  return std::abs(position.x - placedTile.position.x) <= halfCellSize &&
+         std::abs(position.z - placedTile.position.z) <= halfCellSize;
+}
+
+bool isBlockedByMapCollision(const TileSet &tileSet, int level,
+                             const glm::vec3 &position) {
+  for (const PlacedTile &placedTile : tileSet.mapTiles) {
+    if (placedTile.level != level || placedTile.layer == 0 ||
+        placedTile.tileIndex >= tileSet.tiles.size()) {
+      continue;
+    }
+
+    const TileDefinition &tile = tileSet.tiles[placedTile.tileIndex];
+    const auto collisionIterator = tileSet.collisionDefinitions.find(tile.name);
+    if (collisionIterator == tileSet.collisionDefinitions.end() ||
+        !tileHasBlockingCollision(tileSet, tile)) {
+      continue;
+    }
+
+    if (collisionDefinitionContainsWorldPosition(
+            tileSet, tile, placedTile, collisionIterator->second, position,
+            CollisionShapeType::None, CharacterCollisionRadius)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool hasWalkableTileAtLevel(const TileSet &tileSet, int level,
+                            const glm::vec3 &position) {
+  if (level == GroundWorldLevel && hasGroundTileAtPosition(tileSet, position)) {
+    return true;
+  }
+
+  for (const PlacedTile &placedTile : tileSet.mapTiles) {
+    if (placedTile.level != level ||
+        placedTile.tileIndex >= tileSet.tiles.size()) {
+      continue;
+    }
+
+    const TileDefinition &tile = tileSet.tiles[placedTile.tileIndex];
+    const bool isFloorLayer = placedTile.layer == 0;
+    const auto collisionIterator = tileSet.collisionDefinitions.find(tile.name);
+    if (collisionIterator != tileSet.collisionDefinitions.end() &&
+        tileHasFloorCollision(tileSet, tile)) {
+      if (collisionDefinitionContainsWorldPosition(
+              tileSet, tile, placedTile, collisionIterator->second, position,
+              CollisionShapeType::Floor, 0.0F)) {
+        return true;
+      }
+      continue;
+    }
+
+    if (isFloorLayer && isInsidePlacedTileCell(tileSet, placedTile, position,
+                                              0.0F)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+std::optional<float> supportedWorldYAtOrBelow(const TileSet &tileSet,
+                                              const Character &character) {
+  for (int level = character.level; level >= MinWorldLevel; --level) {
+    if (hasWalkableTileAtLevel(tileSet, level, character.position)) {
+      return worldYForLevel(level);
+    }
+  }
+
+  return std::nullopt;
+}
+
+void beginCharacterFall(Character &character, const glm::vec3 &fallFacing) {
+  if (character.animationState == CharacterAnimationState::Falling) {
+    return;
+  }
+
+  clearCharacterAnimationBlend(character);
+  if (glm::length(fallFacing) > std::numeric_limits<float>::epsilon()) {
+    character.facing =
+        glm::normalize(glm::vec3{fallFacing.x, 0.0F, fallFacing.z});
+  }
+  character.animationState = CharacterAnimationState::Falling;
+  character.animationTime = 0.0F;
+  character.isMoving = false;
+  character.verticalVelocity = std::min(character.verticalVelocity, 0.0F);
+}
+
+void updateFallingCharacter(Character &character, const TileSet &tileSet,
+                            float deltaTime) {
+  character.animationTime += deltaTime * CharacterAnimationPlaybackSpeed;
+  character.verticalVelocity =
+      std::max(character.verticalVelocity - CharacterFallGravity * deltaTime,
+               -CharacterMaxFallSpeed);
+  character.position.y += character.verticalVelocity * deltaTime;
+
+  const std::optional<float> supportY =
+      supportedWorldYAtOrBelow(tileSet, character);
+  if (!supportY.has_value() || character.position.y > *supportY) {
+    return;
+  }
+
+  character.position.y = *supportY;
+  character.level = static_cast<int>(std::round(*supportY / WorldLevelHeight));
+  character.verticalVelocity = 0.0F;
+  character.animationState = CharacterAnimationState::Idle;
+  character.animationTime = 0.0F;
+  clearCharacterAnimationBlend(character);
+}
+
+void moveCharacterWithCollision(Character &character, const TileSet &tileSet,
+                                const glm::vec3 &movement) {
+  if (glm::length(movement) <= std::numeric_limits<float>::epsilon()) {
+    return;
+  }
+
+  const glm::vec3 startPosition = character.position;
+  const glm::vec3 targetPosition = startPosition + movement;
+  if (!isBlockedByMapCollision(tileSet, character.level, targetPosition)) {
+    character.position = targetPosition;
+    return;
+  }
+
+  const glm::vec3 xOnlyPosition =
+      startPosition + glm::vec3{movement.x, 0.0F, 0.0F};
+  if (!isBlockedByMapCollision(tileSet, character.level, xOnlyPosition)) {
+    character.position = xOnlyPosition;
+    return;
+  }
+
+  const glm::vec3 zOnlyPosition =
+      startPosition + glm::vec3{0.0F, 0.0F, movement.z};
+  if (!isBlockedByMapCollision(tileSet, character.level, zOnlyPosition)) {
+    character.position = zOnlyPosition;
+  }
+}
+
+float idleTurnMovementScale(const Character &character,
+                            const CharacterAnimationClips &animations) {
+  if (!isIdleTurnAnimationState(character.animationState)) {
+    return 1.0F;
+  }
+
+  const float turnDuration = animationDurationSeconds(
+      idleTurnAnimationForState(character.animationState, animations));
+  if (turnDuration <= std::numeric_limits<float>::epsilon()) {
+    return 1.0F;
+  }
+
+  const float turnProgress =
+      std::clamp(character.animationTime / turnDuration, 0.0F, 1.0F);
+  if (turnProgress <= CharacterIdleTurnMoveStartProgress) {
+    return 0.0F;
+  }
+
+  return smoothStep((turnProgress - CharacterIdleTurnMoveStartProgress) /
+                    (1.0F - CharacterIdleTurnMoveStartProgress));
+}
+
+float characterAnimationPlaybackSpeed(const Character &character,
+                                      bool wantsToMove) {
+  const bool isTransitioning =
+      (wantsToMove &&
+       character.animationState != CharacterAnimationState::Walk) ||
+      (!wantsToMove &&
+       character.animationState != CharacterAnimationState::Idle);
+  return isTransitioning ? CharacterTransitionAnimationPlaybackSpeed
+                         : CharacterAnimationPlaybackSpeed;
+}
+
+void updateCharacterAnimationState(Character &character, bool wantsToMove,
+                                   const glm::vec3 &moveDirection,
+                                   float deltaTime,
+                                   const CharacterAnimationClips &animations) {
+  advanceCharacterAnimationBlend(character, deltaTime);
+
+  if (isIdleTurnAnimationState(character.animationState)) {
+    if (wantsToMove) {
+      const float retargetAngle =
+          signedAngleBetweenDirections(character.facing, moveDirection);
+      if (std::abs(glm::degrees(retargetAngle)) <
+          CharacterIdleTurnThresholdDegrees) {
+        clearCharacterAnimationBlend(character);
+        character.facing = moveDirection;
+        character.animationState = CharacterAnimationState::IdleToWalk;
+        character.animationTime = 0.0F;
+        return;
+      }
+
+      const CharacterAnimationState retargetState =
+          idleTurnAnimationStateForAngle(retargetAngle);
+      if (retargetState != character.animationState &&
+          idleTurnAnimationForState(retargetState, animations).isLoaded()) {
+        character.animationState = retargetState;
+        character.animationTime = 0.0F;
+        character.turnStartFacing = character.facing;
+      }
+      character.turnTargetFacing = moveDirection;
+      character.turnAngleRadians = retargetAngle;
+    }
+
+    const AnimationClip &turnAnimation =
+        idleTurnAnimationForState(character.animationState, animations);
+    const float turnDuration = animationDurationSeconds(turnAnimation);
+    if (turnDuration <= std::numeric_limits<float>::epsilon()) {
+      clearCharacterAnimationBlend(character);
+      character.facing = character.turnTargetFacing;
+      character.animationState = wantsToMove
+                                     ? CharacterAnimationState::IdleToWalk
+                                     : CharacterAnimationState::Idle;
+      character.animationTime = 0.0F;
+      return;
+    }
+
+    character.animationTime += deltaTime;
+
+    if (character.animationTime >= turnDuration) {
+      const bool startedWalkingDuringTurn = character.isMoving && wantsToMove;
+      clearCharacterAnimationBlend(character);
+      character.facing = character.turnTargetFacing;
+      character.animationState =
+          wantsToMove
+              ? (startedWalkingDuringTurn ? CharacterAnimationState::Walk
+                                          : CharacterAnimationState::IdleToWalk)
+              : CharacterAnimationState::Idle;
+      character.animationTime = 0.0F;
+      character.isMoving = wantsToMove;
+    }
+    return;
+  }
+
+  if (!wantsToMove) {
+    character.isMoving = false;
+    if (character.animationState == CharacterAnimationState::Idle) {
+      character.animationTime += deltaTime;
+      return;
+    }
+
+    if (character.animationState != CharacterAnimationState::WalkToStop) {
+      clearCharacterAnimationBlend(character);
+      character.animationState = CharacterAnimationState::WalkToStop;
+      character.animationTime = 0.0F;
+    }
+
+    const float transitionDuration =
+        animationDurationSeconds(animations.walkToStop);
+    if (transitionDuration <= std::numeric_limits<float>::epsilon()) {
+      clearCharacterAnimationBlend(character);
+      character.animationState = CharacterAnimationState::Idle;
+      character.animationTime = 0.0F;
+      return;
+    }
+
+    character.animationTime += deltaTime;
+    if (character.animationTime >= transitionDuration) {
+      character.animationTime = transitionDuration;
+      beginCharacterAnimationBlend(character, CharacterAnimationState::Idle,
+                                   0.0F, CharacterStopToIdleBlendDuration);
+    }
+    return;
+  }
+
+  if (character.animationState == CharacterAnimationState::Idle) {
+    const float turnAngle =
+        signedAngleBetweenDirections(character.facing, moveDirection);
+    if (std::abs(glm::degrees(turnAngle)) >=
+        CharacterIdleTurnThresholdDegrees) {
+      const CharacterAnimationState turnState =
+          idleTurnAnimationStateForAngle(turnAngle);
+      if (idleTurnAnimationForState(turnState, animations).isLoaded()) {
+        clearCharacterAnimationBlend(character);
+        character.animationState = turnState;
+        character.animationTime = 0.0F;
+        character.turnStartFacing = character.facing;
+        character.turnTargetFacing = moveDirection;
+        character.turnAngleRadians = turnAngle;
+        character.isMoving = false;
+        return;
+      }
+    }
+  }
+
+  const bool startedMoving = !character.isMoving;
+  character.isMoving = true;
+  if (startedMoving ||
+      character.animationState == CharacterAnimationState::Idle ||
+      character.animationState == CharacterAnimationState::WalkToStop) {
+    clearCharacterAnimationBlend(character);
+    character.animationState = CharacterAnimationState::IdleToWalk;
+    character.animationTime = 0.0F;
+  }
+
+  if (character.animationState == CharacterAnimationState::IdleToWalk) {
+    const float transitionDuration =
+        animationDurationSeconds(animations.idleToWalk);
+    if (transitionDuration <= std::numeric_limits<float>::epsilon()) {
+      clearCharacterAnimationBlend(character);
+      character.animationState = CharacterAnimationState::Walk;
+      character.animationTime = 0.0F;
+      return;
+    }
+
+    character.animationTime += deltaTime;
+    if (character.animationTime >= transitionDuration) {
+      clearCharacterAnimationBlend(character);
+      character.animationState = CharacterAnimationState::Walk;
+      character.animationTime =
+          std::fmod(character.animationTime, transitionDuration);
+    }
+    return;
+  }
+
+  character.animationTime += deltaTime;
+}
+
+void processKeyboard(GLFWwindow *window, InputState &input, float deltaTime,
+                     const CharacterAnimationClips &animations,
+                     const TileSet &tileSet) {
+  if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+    glfwSetWindowShouldClose(window, GLFW_TRUE);
+  }
+
+  const bool isLevelUpPressed =
+      glfwGetKey(window, GLFW_KEY_PAGE_UP) == GLFW_PRESS;
+  const bool isLevelDownPressed =
+      glfwGetKey(window, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS;
+  if (input.character.animationState == CharacterAnimationState::Falling) {
+    input.wasLevelUpPressed = isLevelUpPressed;
+    input.wasLevelDownPressed = isLevelDownPressed;
+    updateFallingCharacter(input.character, tileSet, deltaTime);
+    input.camera.target = input.character.position;
+    return;
+  }
+  if (isLevelUpPressed && !input.wasLevelUpPressed) {
+    input.character.level = std::min(input.character.level + 1, MaxWorldLevel);
+  }
+  if (isLevelDownPressed && !input.wasLevelDownPressed) {
+    input.character.level = std::max(input.character.level - 1, MinWorldLevel);
+  }
+  input.wasLevelUpPressed = isLevelUpPressed;
+  input.wasLevelDownPressed = isLevelDownPressed;
+  input.character.position.y = worldYForLevel(input.character.level);
+
+  glm::vec3 movement{0.0F, 0.0F, 0.0F};
+  if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+    movement += screenDirectionToWorldDirection(0.0F, 1.0F);
+  }
+  if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
+    movement += screenDirectionToWorldDirection(0.0F, -1.0F);
+  }
+  if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
+    movement += screenDirectionToWorldDirection(1.0F, 0.0F);
+  }
+  if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
+    movement += screenDirectionToWorldDirection(-1.0F, 0.0F);
+  }
+
+  const bool wantsToMove = glm::length(movement) > 0.0F;
+  const glm::vec3 moveDirection =
+      wantsToMove ? glm::normalize(movement) : glm::vec3{0.0F, 0.0F, 0.0F};
+
+  updateCharacterAnimationState(
+      input.character, wantsToMove, moveDirection,
+      deltaTime * characterAnimationPlaybackSpeed(input.character, wantsToMove),
+      animations);
+
+  if (wantsToMove) {
+    const bool isTurningInPlace =
+        isIdleTurnAnimationState(input.character.animationState);
+    const float turnMovementScale =
+        idleTurnMovementScale(input.character, animations);
+    if (turnMovementScale > 0.0F) {
+      const float accelerationScale =
+          idleToWalkAccelerationScale(input.character, animations.idleToWalk);
+      moveCharacterWithCollision(input.character, tileSet,
+                                 moveDirection * CharacterMoveSpeed *
+                                     accelerationScale * turnMovementScale *
+                                     deltaTime);
+      input.character.isMoving = true;
+    }
+    if (!isTurningInPlace) {
+      turnCharacterFacingToward(input.character, moveDirection, deltaTime);
+    }
+  }
+
+  if (!wantsToMove) {
+    const float coastScale =
+        walkToStopCoastScale(input.character, animations.walkToStop);
+    if (coastScale > 0.0F) {
+      moveCharacterWithCollision(input.character, tileSet,
+                                 input.character.facing * CharacterMoveSpeed *
+                                     coastScale * deltaTime);
+    }
+  }
+
+  input.character.position.y = worldYForLevel(input.character.level);
+  if (!hasWalkableTileAtLevel(tileSet, input.character.level,
+                              input.character.position)) {
+    beginCharacterFall(input.character,
+                       wantsToMove ? moveDirection : input.character.facing);
+  }
+  input.camera.target = input.character.position;
+}
+
+void loadMatrix(GLenum matrixMode, const glm::mat4 &matrix) {
+  glMatrixMode(matrixMode);
+  glLoadMatrixf(glm::value_ptr(matrix));
+}
+
+void drawGroundGrid(const TileSet &tileSet, float levelY, bool isActiveLevel) {
+  float minX = static_cast<float>(-GroundTileHalfSize);
+  float maxX = static_cast<float>(GroundTileHalfSize);
+  float minZ = static_cast<float>(-GroundTileHalfSize);
+  float maxZ = static_cast<float>(GroundTileHalfSize);
+
+  if (!tileSet.groundTiles.empty()) {
+    minX = tileSet.groundTiles.front().position.x;
+    maxX = minX;
+    minZ = tileSet.groundTiles.front().position.z;
+    maxZ = minZ;
+    for (const PlacedTile &placedTile : tileSet.groundTiles) {
+      minX = std::min(minX, placedTile.position.x);
+      maxX = std::max(maxX, placedTile.position.x);
+      minZ = std::min(minZ, placedTile.position.z);
+      maxZ = std::max(maxZ, placedTile.position.z);
+    }
+  }
+
+  const float cellSize = tileSet.groundTileCellSize > 0.0F
+                             ? tileSet.groundTileCellSize
+                             : FallbackGroundTileCellSize;
+  const float minBoundaryX = minX - cellSize * 0.5F;
+  const float maxBoundaryX = maxX + cellSize * 0.5F;
+  const float minBoundaryZ = minZ - cellSize * 0.5F;
+  const float maxBoundaryZ = maxZ + cellSize * 0.5F;
+
+  if (isActiveLevel) {
+    glColor3f(0.32F, 0.52F, 0.78F);
+  } else {
+    glColor3f(0.28F, 0.42F, 0.24F);
+  }
+  glBegin(GL_LINES);
+  for (float x = minBoundaryX; x <= maxBoundaryX + cellSize * 0.001F;
+       x += cellSize) {
+    glVertex3f(x, levelY, minBoundaryZ);
+    glVertex3f(x, levelY, maxBoundaryZ);
+  }
+  for (float z = minBoundaryZ; z <= maxBoundaryZ + cellSize * 0.001F;
+       z += cellSize) {
+    glVertex3f(minBoundaryX, levelY, z);
+    glVertex3f(maxBoundaryX, levelY, z);
+  }
+  glEnd();
+}
+
+void drawCube() {
+  struct Face {
+    std::array<glm::vec3, 4> vertices;
+    glm::vec3 color;
+  };
+
+  constexpr float Bottom = 0.0F;
+  constexpr float Top = 1.5F;
+  constexpr float Left = -0.75F;
+  constexpr float Right = 0.75F;
+  constexpr float Back = -0.75F;
+  constexpr float Front = 0.75F;
+
+  const std::array<Face, 6> faces{{
+      {{{{Left, Bottom, Front},
+         {Right, Bottom, Front},
+         {Right, Top, Front},
+         {Left, Top, Front}}},
+       {0.95F, 0.25F, 0.20F}},
+      {{{{Right, Bottom, Back},
+         {Left, Bottom, Back},
+         {Left, Top, Back},
+         {Right, Top, Back}}},
+       {0.75F, 0.18F, 0.16F}},
+      {{{{Left, Bottom, Back},
+         {Left, Bottom, Front},
+         {Left, Top, Front},
+         {Left, Top, Back}}},
+       {0.65F, 0.12F, 0.12F}},
+      {{{{Right, Bottom, Front},
+         {Right, Bottom, Back},
+         {Right, Top, Back},
+         {Right, Top, Front}}},
+       {0.85F, 0.18F, 0.18F}},
+      {{{{Left, Top, Front},
+         {Right, Top, Front},
+         {Right, Top, Back},
+         {Left, Top, Back}}},
+       {1.0F, 0.38F, 0.32F}},
+      {{{{Left, Bottom, Back},
+         {Right, Bottom, Back},
+         {Right, Bottom, Front},
+         {Left, Bottom, Front}}},
+       {0.45F, 0.08F, 0.08F}},
+  }};
+
+  glBegin(GL_QUADS);
+  for (const Face &face : faces) {
+    glColor3f(face.color.r, face.color.g, face.color.b);
+    for (const glm::vec3 &vertex : face.vertices) {
+      glVertex3f(vertex.x, vertex.y, vertex.z);
+    }
+  }
+  glEnd();
+}
+
+float rotationDegreesForFacing(const glm::vec3 &facing) {
+  return glm::degrees(std::atan2(-facing.x, -facing.z));
+}
+
+std::size_t keyIndexBefore(double animationTime,
+                           const std::vector<VectorKey> &keys) {
+  if (keys.size() <= 1) {
+    return 0;
+  }
+
+  for (std::size_t index = 0; index + 1 < keys.size(); ++index) {
+    if (animationTime < keys[index + 1].time) {
+      return index;
+    }
+  }
+  return keys.size() - 2;
+}
+
+std::size_t keyIndexBefore(double animationTime,
+                           const std::vector<QuaternionKey> &keys) {
+  if (keys.size() <= 1) {
+    return 0;
+  }
+
+  for (std::size_t index = 0; index + 1 < keys.size(); ++index) {
+    if (animationTime < keys[index + 1].time) {
+      return index;
+    }
+  }
+  return keys.size() - 2;
+}
+
+float interpolationFactor(double animationTime, double startTime,
+                          double endTime) {
+  const double duration = endTime - startTime;
+  if (duration <= std::numeric_limits<double>::epsilon()) {
+    return 0.0F;
+  }
+  return std::clamp(static_cast<float>((animationTime - startTime) / duration),
+                    0.0F, 1.0F);
+}
+
+glm::vec3 sampleVectorKeys(double animationTime,
+                           const std::vector<VectorKey> &keys,
+                           const glm::vec3 &fallback) {
+  if (keys.empty()) {
+    return fallback;
+  }
+  if (keys.size() == 1) {
+    return keys.front().value;
+  }
+
+  const std::size_t keyIndex = keyIndexBefore(animationTime, keys);
+  const VectorKey &currentKey = keys[keyIndex];
+  const VectorKey &nextKey = keys[keyIndex + 1];
+  return glm::mix(
+      currentKey.value, nextKey.value,
+      interpolationFactor(animationTime, currentKey.time, nextKey.time));
+}
+
+glm::quat sampleQuaternionKeys(double animationTime,
+                               const std::vector<QuaternionKey> &keys,
+                               const glm::quat &fallback) {
+  if (keys.empty()) {
+    return fallback;
+  }
+  if (keys.size() == 1) {
+    return glm::normalize(keys.front().value);
+  }
+
+  const std::size_t keyIndex = keyIndexBefore(animationTime, keys);
+  const QuaternionKey &currentKey = keys[keyIndex];
+  const QuaternionKey &nextKey = keys[keyIndex + 1];
+  return glm::normalize(glm::slerp(
+      currentKey.value, nextKey.value,
+      interpolationFactor(animationTime, currentKey.time, nextKey.time)));
+}
+
+double firstAnimationKeyTime(const AnimationChannel &channel) {
+  double firstTime = std::numeric_limits<double>::infinity();
+  if (!channel.positions.empty()) {
+    firstTime = std::min(firstTime, channel.positions.front().time);
+  }
+  if (!channel.rotations.empty()) {
+    firstTime = std::min(firstTime, channel.rotations.front().time);
+  }
+  if (!channel.scales.empty()) {
+    firstTime = std::min(firstTime, channel.scales.front().time);
+  }
+  return std::isfinite(firstTime) ? firstTime : 0.0;
+}
+
+struct TransformComponents {
+  glm::vec3 position{0.0F, 0.0F, 0.0F};
+  glm::quat rotation{1.0F, 0.0F, 0.0F, 0.0F};
+  glm::vec3 scale{1.0F, 1.0F, 1.0F};
+};
+
+glm::mat4 composeTransform(const TransformComponents &transform) {
+  return glm::translate(glm::mat4{1.0F}, transform.position) *
+         glm::mat4_cast(transform.rotation) *
+         glm::scale(glm::mat4{1.0F}, transform.scale);
+}
+
+TransformComponents decomposeTransform(const glm::mat4 &transform) {
+  TransformComponents result;
+  result.position = glm::vec3{transform[3]};
+  result.scale = {glm::length(glm::vec3{transform[0]}),
+                  glm::length(glm::vec3{transform[1]}),
+                  glm::length(glm::vec3{transform[2]})};
+
+  glm::mat3 rotationMatrix{1.0F};
+  if (result.scale.x > std::numeric_limits<float>::epsilon()) {
+    rotationMatrix[0] = glm::vec3{transform[0]} / result.scale.x;
+  }
+  if (result.scale.y > std::numeric_limits<float>::epsilon()) {
+    rotationMatrix[1] = glm::vec3{transform[1]} / result.scale.y;
+  }
+  if (result.scale.z > std::numeric_limits<float>::epsilon()) {
+    rotationMatrix[2] = glm::vec3{transform[2]} / result.scale.z;
+  }
+  result.rotation = glm::normalize(glm::quat_cast(rotationMatrix));
+  return result;
+}
+
+glm::mat4 nodeTransformForAnimation(const SkeletonNode &node,
+                                    const AnimationClip &animation,
+                                    double animationTime) {
+  const auto channelIterator = animation.channelIndexByNodeName.find(node.name);
+  if (channelIterator == animation.channelIndexByNodeName.end()) {
+    return node.transform;
+  }
+
+  const AnimationChannel &channel = animation.channels[channelIterator->second];
+  const TransformComponents bindTransform = decomposeTransform(node.transform);
+  const glm::vec3 position = sampleVectorKeys(animationTime, channel.positions,
+                                              bindTransform.position);
+  const glm::quat rotation = sampleQuaternionKeys(
+      animationTime, channel.rotations, bindTransform.rotation);
+  const glm::vec3 scale =
+      sampleVectorKeys(animationTime, channel.scales, bindTransform.scale);
+  const glm::mat4 sampledTransform =
+      composeTransform(TransformComponents{position, rotation, scale});
+
+  if (!animation.retargetFirstFrameToBindPose) {
+    if (animation.keepBindPoseTranslations) {
+      return composeTransform(TransformComponents{
+          bindTransform.position, rotation, bindTransform.scale});
+    }
+    return sampledTransform;
+  }
+
+  const double referenceTime = firstAnimationKeyTime(channel);
+  const glm::quat referenceRotation = sampleQuaternionKeys(
+      referenceTime, channel.rotations, bindTransform.rotation);
+
+  if (animation.keepBindPoseTranslations) {
+    const glm::quat retargetedRotation =
+        bindTransform.rotation * glm::inverse(referenceRotation) * rotation;
+    return composeTransform(TransformComponents{
+        bindTransform.position, retargetedRotation, bindTransform.scale});
+  }
+
+  const glm::vec3 referencePosition = sampleVectorKeys(
+      referenceTime, channel.positions, bindTransform.position);
+  const glm::vec3 referenceScale =
+      sampleVectorKeys(referenceTime, channel.scales, bindTransform.scale);
+  const glm::mat4 referenceTransform = composeTransform(TransformComponents{
+      referencePosition, referenceRotation, referenceScale});
+
+  return node.transform * glm::inverse(referenceTransform) * sampledTransform;
+}
+
+void computeBoneMatricesRecursive(const SkeletonNode &node,
+                                  const glm::mat4 &parentTransform,
+                                  const Model &model,
+                                  const AnimationClip &animation,
+                                  double animationTime,
+                                  std::vector<glm::mat4> &boneMatrices) {
+  const glm::mat4 globalTransform =
+      parentTransform *
+      nodeTransformForAnimation(node, animation, animationTime);
+
+  const auto boneIterator = model.boneIndexByName.find(node.name);
+  if (boneIterator != model.boneIndexByName.end()) {
+    const int boneIndex = boneIterator->second;
+    boneMatrices[boneIndex] = model.globalInverseTransform * globalTransform *
+                              model.bones[boneIndex].offsetMatrix;
+  }
+
+  for (const SkeletonNode &child : node.children) {
+    computeBoneMatricesRecursive(child, globalTransform, model, animation,
+                                 animationTime, boneMatrices);
+  }
+}
+
+std::vector<glm::mat4> computeBoneMatrices(const Model &model,
+                                           const AnimationClip &animation,
+                                           float elapsedSeconds,
+                                           bool shouldLoop = true) {
+  std::vector<glm::mat4> boneMatrices(model.bones.size(), glm::mat4{1.0F});
+  if (!model.hasSkeleton() || !animation.isLoaded()) {
+    return boneMatrices;
+  }
+
+  const double ticksPerSecond =
+      animation.ticksPerSecond > 0.0 ? animation.ticksPerSecond : 24.0;
+  const double timeInTicks =
+      static_cast<double>(elapsedSeconds) * ticksPerSecond;
+  const double animationTime =
+      shouldLoop ? std::fmod(timeInTicks, animation.durationTicks)
+                 : std::clamp(timeInTicks, 0.0, animation.durationTicks);
+  computeBoneMatricesRecursive(model.rootNode, glm::mat4{1.0F}, model,
+                               animation, animationTime, boneMatrices);
+  return boneMatrices;
+}
+
+Vertex animatedVertex(const Vertex &vertex,
+                      const std::vector<glm::mat4> &boneMatrices) {
+  Vertex result = vertex;
+
+  glm::vec4 skinnedPosition{0.0F, 0.0F, 0.0F, 0.0F};
+  glm::vec3 skinnedNormal{0.0F, 0.0F, 0.0F};
+  float totalWeight = 0.0F;
+  for (int slot = 0; slot < MaxVertexBones; ++slot) {
+    const int boneId = vertex.boneIds[slot];
+    const float weight = vertex.boneWeights[slot];
+    if (boneId < 0 || boneId >= static_cast<int>(boneMatrices.size()) ||
+        weight <= 0.0F) {
+      continue;
+    }
+
+    const glm::mat4 &boneMatrix = boneMatrices[boneId];
+    skinnedPosition += boneMatrix * glm::vec4{vertex.position, 1.0F} * weight;
+    skinnedNormal += glm::mat3(boneMatrix) * vertex.normal * weight;
+    totalWeight += weight;
+  }
+
+  if (totalWeight > std::numeric_limits<float>::epsilon()) {
+    result.staticPosition =
+        glm::vec3{skinnedPosition.x, skinnedPosition.y, skinnedPosition.z};
+    result.staticNormal = glm::normalize(skinnedNormal);
+  }
+  return result;
+}
+
+void drawModelWithBoneMatrices(const Model &model,
+                               const std::vector<glm::mat4> &boneMatrices,
+                               const Texture2D &texture) {
+  if (texture.isLoaded()) {
+    glEnable(GL_TEXTURE_2D);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_ALPHA_TEST);
+    glAlphaFunc(GL_GREATER, 0.01F);
+    glBindTexture(GL_TEXTURE_2D, texture.id);
+    glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
+  } else {
+    glDisable(GL_TEXTURE_2D);
+    glColor3f(0.82F, 0.76F, 0.65F);
+  }
+
+  glBegin(GL_TRIANGLES);
+  for (const Mesh &mesh : model.meshes) {
+    for (const unsigned int index : mesh.indices) {
+      if (index >= mesh.vertices.size()) {
+        continue;
+      }
+
+      const Vertex vertex =
+          mesh.isSkinned ? animatedVertex(mesh.vertices[index], boneMatrices)
+                         : mesh.vertices[index];
+      glNormal3f(vertex.staticNormal.x, vertex.staticNormal.y,
+                 vertex.staticNormal.z);
+      glTexCoord2f(vertex.texCoord.x, vertex.texCoord.y);
+      glVertex3f(vertex.staticPosition.x, vertex.staticPosition.y,
+                 vertex.staticPosition.z);
+    }
+  }
+  glEnd();
+  if (texture.isLoaded()) {
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDisable(GL_ALPHA_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_TEXTURE_2D);
+  }
+}
+
+bool isLoopingAnimationState(CharacterAnimationState animationState) {
+  return animationState == CharacterAnimationState::Idle ||
+         animationState == CharacterAnimationState::Walk ||
+         animationState == CharacterAnimationState::Falling;
+}
+
+float characterAnimationBlendFactor(const Character &character) {
+  if (!character.isAnimationBlending()) {
+    return 1.0F;
+  }
+
+  return smoothStep(character.animationBlendTime /
+                    character.animationBlendDuration);
+}
+
+std::vector<glm::mat4>
+blendBoneMatrices(const std::vector<glm::mat4> &sourceBoneMatrices,
+                  const std::vector<glm::mat4> &targetBoneMatrices,
+                  float blendFactor) {
+  if (sourceBoneMatrices.size() != targetBoneMatrices.size()) {
+    return targetBoneMatrices;
+  }
+
+  std::vector<glm::mat4> blendedBoneMatrices;
+  blendedBoneMatrices.reserve(targetBoneMatrices.size());
+  for (std::size_t boneIndex = 0; boneIndex < targetBoneMatrices.size();
+       ++boneIndex) {
+    blendedBoneMatrices.push_back(sourceBoneMatrices[boneIndex] *
+                                      (1.0F - blendFactor) +
+                                  targetBoneMatrices[boneIndex] * blendFactor);
+  }
+  return blendedBoneMatrices;
+}
+
+void drawTileSprite(const TileSet &tileSet, const TileDefinition &tile,
+                    const glm::vec3 &worldPosition, const Camera &camera) {
+  if (tile.atlasIndex >= tileSet.atlases.size()) {
+    return;
+  }
+
+  const TileAtlas &atlas = tileSet.atlases[tile.atlasIndex];
+  if (!atlas.texture.isLoaded()) {
+    return;
+  }
+
+  const glm::vec3 screenRight = camera.right();
+  const glm::vec3 screenUp =
+      glm::normalize(glm::cross(screenRight, camera.forward()));
+  // Ground metadata can describe a cropped sprite inside a taller logical
+  // frame. Treat worldPosition as the projected floor/collision-cell center,
+  // then lift tall sprites so the bottom cell authored in the collision editor
+  // lands on that same world anchor.
+  const float halfWidth =
+      static_cast<float>(tile.size.x) * TileSpriteWorldScale * 0.5F;
+  const float halfHeight =
+      static_cast<float>(tile.size.y) * TileSpriteWorldScale * 0.5F;
+  const float collisionCellCenterOffset =
+      (projectedTileCellCenterYPixels(tile) -
+       static_cast<float>(tile.size.y) * 0.5F) *
+      TileSpriteWorldScale;
+  const glm::vec3 alignedWorldPosition =
+      worldPosition + screenUp * collisionCellCenterOffset;
+  const float left = -halfWidth;
+  const float right = halfWidth;
+  const float top = halfHeight;
+  const float bottom = -halfHeight;
+
+  const float u0 = static_cast<float>(tile.position.x) /
+                   static_cast<float>(atlas.texture.width);
+  const float u1 = static_cast<float>(tile.position.x + tile.size.x) /
+                   static_cast<float>(atlas.texture.width);
+  const float v0 = 1.0F - static_cast<float>(tile.position.y + tile.size.y) /
+                              static_cast<float>(atlas.texture.height);
+  const float v1 = 1.0F - static_cast<float>(tile.position.y) /
+                              static_cast<float>(atlas.texture.height);
+
+  glBindTexture(GL_TEXTURE_2D, atlas.texture.id);
+  glBegin(GL_QUADS);
+  glTexCoord2f(u0, v0);
+  const glm::vec3 bottomLeft =
+      alignedWorldPosition + screenRight * left + screenUp * bottom;
+  glVertex3f(bottomLeft.x, bottomLeft.y, bottomLeft.z);
+  glTexCoord2f(u1, v0);
+  const glm::vec3 bottomRight =
+      alignedWorldPosition + screenRight * right + screenUp * bottom;
+  glVertex3f(bottomRight.x, bottomRight.y, bottomRight.z);
+  glTexCoord2f(u1, v1);
+  const glm::vec3 topRight =
+      alignedWorldPosition + screenRight * right + screenUp * top;
+  glVertex3f(topRight.x, topRight.y, topRight.z);
+  glTexCoord2f(u0, v1);
+  const glm::vec3 topLeft =
+      alignedWorldPosition + screenRight * left + screenUp * top;
+  glVertex3f(topLeft.x, topLeft.y, topLeft.z);
+  glEnd();
+}
+
+void drawTileSet(const TileSet &tileSet, const Camera &camera,
+                 bool drawFloorLayers) {
+  if (!tileSet.isLoaded()) {
+    return;
+  }
+
+  glEnable(GL_TEXTURE_2D);
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  glEnable(GL_ALPHA_TEST);
+  glAlphaFunc(GL_GREATER, 0.01F);
+  glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
+
+  glDepthMask(GL_FALSE);
+
+  auto drawPlacedTile = [&](const PlacedTile &placedTile) {
+    if (placedTile.tileIndex >= tileSet.tiles.size()) {
+      return;
+    }
+    drawTileSprite(tileSet, tileSet.tiles[placedTile.tileIndex],
+                   placedTile.position, camera);
+  };
+
+  if (drawFloorLayers) {
+    for (const PlacedTile &placedTile : tileSet.groundTiles) {
+      drawPlacedTile(placedTile);
+    }
+  }
+
+  for (const PlacedTile &placedTile : tileSet.mapTiles) {
+    const bool isFloorLayer = placedTile.layer == 0;
+    if (isFloorLayer == drawFloorLayers) {
+      drawPlacedTile(placedTile);
+    }
+  }
+
+  glDepthMask(GL_TRUE);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  glDisable(GL_ALPHA_TEST);
+  glDisable(GL_BLEND);
+  glDisable(GL_TEXTURE_2D);
+}
+
+void configureOpenGl() {
+  glEnable(GL_DEPTH_TEST);
+  glDisable(GL_CULL_FACE);
+  glDisable(GL_BLEND);
+  glDisable(GL_ALPHA_TEST);
+  glClearColor(0.48F, 0.72F, 1.0F, 1.0F);
+}
+
+const AnimationClip &
+idleTurnAnimationForState(CharacterAnimationState animationState,
+                          const CharacterAnimationClips &animations) {
+  switch (animationState) {
+  // The 45- and 90-degree source clips are named opposite to the direction
+  // they play.
+  case CharacterAnimationState::IdleTurn45L:
+    return animations.idleTurn45R;
+  case CharacterAnimationState::IdleTurn45R:
+    return animations.idleTurn45L;
+  case CharacterAnimationState::IdleTurn90L:
+    return animations.idleTurn90R;
+  case CharacterAnimationState::IdleTurn90R:
+    return animations.idleTurn90L;
+  case CharacterAnimationState::IdleTurn180L:
+    return animations.idleTurn180L;
+  case CharacterAnimationState::IdleTurn180R:
+    return animations.idleTurn180R;
+  default:
+    return animations.idle;
+  }
+}
+
+const AnimationClip &
+clipForAnimationState(CharacterAnimationState animationState,
+                      const CharacterAnimationClips &animations) {
+  switch (animationState) {
+  case CharacterAnimationState::Idle:
+    return animations.idle;
+  case CharacterAnimationState::IdleToWalk:
+    return animations.idleToWalk.isLoaded() ? animations.idleToWalk
+                                            : animations.walk;
+  case CharacterAnimationState::Walk:
+    return animations.walk;
+  case CharacterAnimationState::WalkToStop:
+    return animations.walkToStop.isLoaded() ? animations.walkToStop
+                                            : animations.idle;
+  case CharacterAnimationState::Falling:
+    return animations.fallIdle.isLoaded() ? animations.fallIdle
+                                          : animations.idle;
+  // The 45- and 90-degree source clips are named opposite to the direction
+  // they play.
+  case CharacterAnimationState::IdleTurn45L:
+    return animations.idleTurn45R.isLoaded() ? animations.idleTurn45R
+                                             : animations.idle;
+  case CharacterAnimationState::IdleTurn45R:
+    return animations.idleTurn45L.isLoaded() ? animations.idleTurn45L
+                                             : animations.idle;
+  case CharacterAnimationState::IdleTurn90L:
+    return animations.idleTurn90R.isLoaded() ? animations.idleTurn90R
+                                             : animations.idle;
+  case CharacterAnimationState::IdleTurn90R:
+    return animations.idleTurn90L.isLoaded() ? animations.idleTurn90L
+                                             : animations.idle;
+  case CharacterAnimationState::IdleTurn180L:
+    return animations.idleTurn180L.isLoaded() ? animations.idleTurn180L
+                                              : animations.idle;
+  case CharacterAnimationState::IdleTurn180R:
+    return animations.idleTurn180R.isLoaded() ? animations.idleTurn180R
+                                              : animations.idle;
+  }
+
+  return animations.idle;
+}
+
+const AnimationClip &
+activeAnimationForCharacter(const Character &character,
+                            const CharacterAnimationClips &animations) {
+  return clipForAnimationState(character.animationState, animations);
+}
+
+std::vector<glm::mat4>
+boneMatricesForCharacter(const Character &character, const Model &bodyModel,
+                         const CharacterAnimationClips &animations) {
+  const AnimationClip &activeAnimation =
+      activeAnimationForCharacter(character, animations);
+  std::vector<glm::mat4> activeBoneMatrices =
+      computeBoneMatrices(bodyModel, activeAnimation, character.animationTime,
+                          isLoopingAnimationState(character.animationState));
+
+  if (!character.isAnimationBlending()) {
+    return activeBoneMatrices;
+  }
+
+  const AnimationClip &sourceAnimation =
+      clipForAnimationState(character.animationBlendSourceState, animations);
+  const std::vector<glm::mat4> sourceBoneMatrices = computeBoneMatrices(
+      bodyModel, sourceAnimation, character.animationBlendSourceTime,
+      isLoopingAnimationState(character.animationBlendSourceState));
+
+  return blendBoneMatrices(sourceBoneMatrices, activeBoneMatrices,
+                           characterAnimationBlendFactor(character));
+}
+
+void renderScene(const Camera &camera, const Character &character,
+                 const Model &bodyModel, const Texture2D &bodyTexture,
+                 const CharacterAnimationClips &animations,
+                 const TileSet &tileSet, int framebufferWidth,
+                 int framebufferHeight) {
+  glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+  const float aspectRatio = framebufferHeight > 0
+                                ? static_cast<float>(framebufferWidth) /
+                                      static_cast<float>(framebufferHeight)
+                                : 1.0F;
+  const glm::mat4 projection = camera.projectionMatrix(aspectRatio);
+
+  loadMatrix(GL_PROJECTION, projection);
+  loadMatrix(GL_MODELVIEW, camera.viewMatrix());
+
+  drawTileSet(tileSet, camera, true);
+  drawGroundGrid(tileSet, GroundTileLayerY, false);
+  if (character.level != GroundWorldLevel) {
+    drawGroundGrid(
+        tileSet, static_cast<float>(character.level) * WorldLevelHeight, true);
+  }
+  drawTileSet(tileSet, camera, false);
+
+  glPushMatrix();
+  glTranslatef(character.position.x, character.position.y,
+               character.position.z);
+  glRotatef(rotationDegreesForFacing(character.facing), 0.0F, 1.0F, 0.0F);
+  if (bodyModel.isLoaded()) {
+    glScalef(0.01F, 0.01F, 0.01F);
+    drawModelWithBoneMatrices(
+        bodyModel, boneMatricesForCharacter(character, bodyModel, animations),
+        bodyTexture);
+  } else {
+    drawCube();
+  }
+  glPopMatrix();
+}
+
+GLFWwindow *createWindow() {
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+  glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+
+  GLFWwindow *window = glfwCreateWindow(WindowWidth, WindowHeight,
+                                        "Project Zomboid C++ Engine Prototype",
+                                        nullptr, nullptr);
+  if (window == nullptr) {
+    std::cerr << "Failed to create a GLFW window.\n";
+    return nullptr;
+  }
+
+  glfwMakeContextCurrent(window);
+  glfwSwapInterval(1);
+  glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
+  glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+  return window;
+}
+} // namespace
+
+int main() {
+  glfwSetErrorCallback(errorCallback);
+  if (glfwInit() != GLFW_TRUE) {
+    std::cerr << "Failed to initialize GLFW.\n";
+    return EXIT_FAILURE;
+  }
+
+  GLFWwindow *window = createWindow();
+  if (window == nullptr) {
+    glfwTerminate();
+    return EXIT_FAILURE;
+  }
+
+  InputState input;
+  glfwSetWindowUserPointer(window, &input);
+  glfwSetScrollCallback(window, scrollCallback);
+
+  const Model bodyModel = loadModel(BodyModelPath);
+  const Texture2D bodyTexture = loadTexture2D(BodyTexturePath);
+  const TileSet tileSet = loadTileSet(Tiles1xTexturePackPath);
+  CharacterAnimationClips animations;
+  animations.idle = loadAnimationClip(IdleAnimationPath, "Bob_Idle");
+  animations.idleToWalk =
+      loadAnimationClip(IdleToWalkAnimationPath, "Bob_IdleToWalk", false, true);
+  animations.walk =
+      loadAnimationClip(WalkAnimationPath, "Bob_Walk", true, true);
+  animations.walkToStop =
+      loadAnimationClip(WalkToStopAnimationPath, "Bob_WalkToStop", true, true);
+  animations.fallIdle =
+      loadAnimationClip(FallIdleAnimationPath, "Bob_FallIdle.002", true, true);
+  animations.idleTurn45L = loadAnimationClip(
+      IdleTurn45LAnimationPath, "Bob_IdleTurn45L.001", false, true);
+  animations.idleTurn45R = loadAnimationClip(
+      IdleTurn45RAnimationPath, "Bob_IdleTurn45R.002", false, true);
+  animations.idleTurn90L = loadAnimationClip(
+      IdleTurn90LAnimationPath, "Bob_IdleTurn90L.003", false, true);
+  animations.idleTurn90R = loadAnimationClip(
+      IdleTurn90RAnimationPath, "Bob_IdleTurn90R.004", false, true);
+  animations.idleTurn180L = loadAnimationClip(
+      IdleTurn180LAnimationPath, "Bob_IdleTurn180L.005", false, true);
+  animations.idleTurn180R = loadAnimationClip(
+      IdleTurn180RAnimationPath, "Bob_IdleTurn180R.006", false, true);
+  printAnimationMatchReport(bodyModel, animations.idle);
+  printAnimationMatchReport(bodyModel, animations.idleToWalk);
+  printAnimationMatchReport(bodyModel, animations.walk);
+  printAnimationMatchReport(bodyModel, animations.walkToStop);
+  printAnimationMatchReport(bodyModel, animations.fallIdle);
+  printAnimationMatchReport(bodyModel, animations.idleTurn45L);
+  printAnimationMatchReport(bodyModel, animations.idleTurn45R);
+  printAnimationMatchReport(bodyModel, animations.idleTurn90L);
+  printAnimationMatchReport(bodyModel, animations.idleTurn90R);
+  printAnimationMatchReport(bodyModel, animations.idleTurn180L);
+  printAnimationMatchReport(bodyModel, animations.idleTurn180R);
+  configureOpenGl();
+
+  float previousTime = static_cast<float>(glfwGetTime());
+  while (glfwWindowShouldClose(window) == GLFW_FALSE) {
+    const float currentTime = static_cast<float>(glfwGetTime());
+    const float deltaTime = currentTime - previousTime;
+    previousTime = currentTime;
+
+    processKeyboard(window, input, deltaTime, animations, tileSet);
+
+    int framebufferWidth = 0;
+    int framebufferHeight = 0;
+    glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+    renderScene(input.camera, input.character, bodyModel, bodyTexture,
+                animations, tileSet, framebufferWidth, framebufferHeight);
+
+    glfwSwapBuffers(window);
+    glfwPollEvents();
+  }
+
+  glfwDestroyWindow(window);
+  glfwTerminate();
+  return EXIT_SUCCESS;
+}
