@@ -74,6 +74,7 @@ constexpr const char *IdleTurn180LAnimationPath =
 constexpr const char *IdleTurn180RAnimationPath =
     "media/anim_x/bob/Bob_IdleTurn180R.fbx";
 constexpr const char *BodyTexturePath = "media/textures/Body/MaleBody01.png";
+constexpr const char *SportsCarModelPath = "media/cars/sport/bmw_m3.fbx";
 constexpr const char *Tiles1xTexturePackPath = "media/texturepacks/Tiles1x";
 constexpr const char *DefaultMapPath = "saves/map_01.toml";
 constexpr float TileSpriteWorldScale = 1.0F / 64.0F;
@@ -89,6 +90,9 @@ constexpr float WorldLevelHeight =
 constexpr int MinWorldLevel = -10;
 constexpr int GroundWorldLevel = 0;
 constexpr int MaxWorldLevel = 10;
+constexpr glm::vec3 SportsCarPosition{4.0F, 0.0F, -6.0F};
+constexpr float SportsCarYawDegrees = -35.0F;
+constexpr float SportsCarScale = 0.012F;
 
 struct Vertex {
   glm::vec3 position{};
@@ -2666,6 +2670,20 @@ void drawModelWithBoneMatrices(const Model &model,
   }
 }
 
+void drawPlacedStaticModel(const Model &model, const glm::vec3 &position,
+                           float yawDegrees, float scale) {
+  if (!model.isLoaded()) {
+    return;
+  }
+
+  glPushMatrix();
+  glTranslatef(position.x, position.y, position.z);
+  glRotatef(yawDegrees, 0.0F, 1.0F, 0.0F);
+  glScalef(scale, scale, scale);
+  drawModelWithBoneMatrices(model, {}, {});
+  glPopMatrix();
+}
+
 bool isLoopingAnimationState(CharacterAnimationState animationState) {
   return animationState == CharacterAnimationState::Idle ||
          animationState == CharacterAnimationState::Walk ||
@@ -2909,8 +2927,8 @@ boneMatricesForCharacter(const Character &character, const Model &bodyModel,
 }
 
 void renderScene(const Camera &camera, const Character &character,
-                 const TileSet &tileSet, int framebufferWidth,
-                 int framebufferHeight) {
+                 const TileSet &tileSet, const Model &sportsCarModel,
+                 int framebufferWidth, int framebufferHeight) {
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
   const float aspectRatio = framebufferHeight > 0
@@ -2928,6 +2946,8 @@ void renderScene(const Camera &camera, const Character &character,
     drawGroundGrid(
         tileSet, static_cast<float>(character.level) * WorldLevelHeight, true);
   }
+  drawPlacedStaticModel(sportsCarModel, SportsCarPosition, SportsCarYawDegrees,
+                        SportsCarScale);
   drawTileSet(tileSet, camera, false);
 
   // First-person mode intentionally does not draw the player body or its
@@ -2975,6 +2995,7 @@ int main() {
   glfwSetScrollCallback(window, scrollCallback);
 
   const Model bodyModel = loadModel(BodyModelPath);
+  const Model sportsCarModel = loadModel(SportsCarModelPath);
   [[maybe_unused]] const Texture2D bodyTexture = loadTexture2D(BodyTexturePath);
   const TileSet tileSet = loadTileSet(Tiles1xTexturePackPath);
   CharacterAnimationClips animations;
@@ -3023,8 +3044,8 @@ int main() {
     int framebufferWidth = 0;
     int framebufferHeight = 0;
     glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
-    renderScene(input.camera, input.character, tileSet, framebufferWidth,
-                framebufferHeight);
+    renderScene(input.camera, input.character, tileSet, sportsCarModel,
+                framebufferWidth, framebufferHeight);
 
     glfwSwapBuffers(window);
     glfwPollEvents();
