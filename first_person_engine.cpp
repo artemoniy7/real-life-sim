@@ -33,6 +33,10 @@ constexpr float EditorObjectScaleSpeed = 1.6F;
 constexpr float MinEditorObjectScale = 0.05F;
 constexpr float MaxEditorObjectScale = 20.0F;
 constexpr const char *DefaultEditorModelPath = "media/models/Bob.fbx";
+constexpr const char *DefaultEditorModelDirectory = "media/cars/sport";
+constexpr const char *SportsCarModelPath = "media/cars/sport/bmw_m3.fbx";
+constexpr float SportsCarYawDegrees = -35.0F;
+constexpr float SportsCarScale = 0.012F;
 constexpr float Pi = 3.14159265358979323846F;
 
 struct Vec3 {
@@ -40,6 +44,8 @@ struct Vec3 {
   float y = 0.0F;
   float z = 0.0F;
 };
+
+constexpr Vec3 SportsCarPosition{4.0F, GrassPlatformY, -6.0F};
 
 Vec3 operator+(const Vec3 &left, const Vec3 &right) {
   return {left.x + right.x, left.y + right.y, left.z + right.z};
@@ -167,6 +173,7 @@ struct StaticModel {
 struct MapObject {
   StaticModel model;
   Vec3 position{0.0F, GrassPlatformY, 0.0F};
+  float yawDegrees = 0.0F;
   float scale = 1.0F;
 };
 
@@ -412,6 +419,7 @@ void updateEditorControls(GLFWwindow *window, InputState &input,
     StaticModel loadedModel = loadFbxModel(editor.modelPath);
     if (loadedModel.isLoaded()) {
       editor.object.model = std::move(loadedModel);
+      editor.object.yawDegrees = 0.0F;
       editor.object.scale = 1.0F;
       placeEditorObjectInFrontOfCamera(editor, camera);
     }
@@ -498,17 +506,21 @@ void drawStaticModel(const StaticModel &model) {
   glEnd();
 }
 
-void drawEditorObject(const EditorState &editor) {
-  if (!editor.object.model.isLoaded()) {
+void drawMapObject(const MapObject &object) {
+  if (!object.model.isLoaded()) {
     return;
   }
 
   glPushMatrix();
-  glTranslatef(editor.object.position.x, editor.object.position.y,
-               editor.object.position.z);
-  glScalef(editor.object.scale, editor.object.scale, editor.object.scale);
-  drawStaticModel(editor.object.model);
+  glTranslatef(object.position.x, object.position.y, object.position.z);
+  glRotatef(object.yawDegrees, 0.0F, 1.0F, 0.0F);
+  glScalef(object.scale, object.scale, object.scale);
+  drawStaticModel(object.model);
   glPopMatrix();
+}
+
+void drawEditorObject(const EditorState &editor) {
+  drawMapObject(editor.object);
 }
 
 void updateWindowTitle(GLFWwindow *window, const Player &player,
@@ -524,7 +536,8 @@ void updateWindowTitle(GLFWwindow *window, const Player &player,
 }
 
 void renderScene(const Camera &camera, const EditorState &editor,
-                 int framebufferWidth, int framebufferHeight) {
+                 const MapObject &sportsCar, int framebufferWidth,
+                 int framebufferHeight) {
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
   const float aspectRatio = framebufferHeight > 0
@@ -535,6 +548,7 @@ void renderScene(const Camera &camera, const EditorState &editor,
   loadViewMatrix(camera);
 
   drawGrassPlatform();
+  drawMapObject(sportsCar);
   drawEditorObject(editor);
 }
 
@@ -586,6 +600,11 @@ int main(int argc, char **argv) {
   if (argc > 1) {
     editor.modelPath = argv[1];
   }
+  MapObject sportsCar;
+  sportsCar.model = loadFbxModel(SportsCarModelPath);
+  sportsCar.position = SportsCarPosition;
+  sportsCar.yawDegrees = SportsCarYawDegrees;
+  sportsCar.scale = SportsCarScale;
   camera.position = player.feetPosition + Vec3{0.0F, PlayerEyeHeight, 0.0F};
 
   std::cout << "Press L to toggle map editor. In editor press O to load FBX: "
@@ -609,7 +628,7 @@ int main(int argc, char **argv) {
     int framebufferWidth = 0;
     int framebufferHeight = 0;
     glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
-    renderScene(camera, editor, framebufferWidth, framebufferHeight);
+    renderScene(camera, editor, sportsCar, framebufferWidth, framebufferHeight);
 
     glfwSwapBuffers(window);
     glfwPollEvents();
