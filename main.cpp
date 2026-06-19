@@ -53,6 +53,7 @@ constexpr float NearPlane = 0.1F;
 constexpr float FarPlane = 1000.0F;
 constexpr int MaxVertexBones = 4;
 constexpr const char *BodyModelPath = "media/models/Bob.fbx";
+constexpr const char *DefaultEditorModelDirectory = "media/cars/sport";
 constexpr const char *IdleAnimationPath = "media/anim_x/bob/Bob_Idle.fbx";
 constexpr const char *IdleToWalkAnimationPath =
     "media/anim_x/bob/Bob_IdleToWalk.fbx";
