@@ -6,10 +6,12 @@
 #include <assimp/scene.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -179,7 +181,7 @@ struct MapObject {
 struct EditorState {
   bool isEnabled = false;
   MapObject object;
-  std::filesystem::path modelPath = DefaultEditorModelPath;
+  std::filesystem::path modelDirectory = DefaultEditorModelDirectory;
 };
 
 struct InputState {
@@ -196,6 +198,89 @@ void errorCallback(int error, const char *description) {
 
 void framebufferSizeCallback(GLFWwindow *, int width, int height) {
   glViewport(0, 0, width, height);
+}
+
+bool isFbxPath(const std::filesystem::path &path) {
+  const std::string extension = path.extension().string();
+  return extension == ".fbx" || extension == ".FBX" || extension == ".Fbx";
+}
+
+std::vector<std::filesystem::path>
+findFbxFilesInDirectory(const std::filesystem::path &directory) {
+  std::vector<std::filesystem::path> files;
+  std::error_code error;
+  if (!std::filesystem::is_directory(directory, error)) {
+    return files;
+  }
+
+  for (const std::filesystem::directory_entry &entry :
+       std::filesystem::directory_iterator(directory, error)) {
+    if (error) {
+      break;
+    }
+    if (entry.is_regular_file(error) && isFbxPath(entry.path())) {
+      files.push_back(entry.path());
+    }
+  }
+  std::sort(files.begin(), files.end());
+  return files;
+}
+
+std::optional<std::filesystem::path>
+promptForFbxPath(std::filesystem::path &lastDirectory) {
+  std::cout << "\nMap editor FBX loader\n"
+            << "Folder [" << lastDirectory << "] (Enter = keep): ";
+  std::string directoryInput;
+  std::getline(std::cin, directoryInput);
+  if (!directoryInput.empty()) {
+    lastDirectory = directoryInput;
+  }
+
+  const std::vector<std::filesystem::path> fbxFiles =
+      findFbxFilesInDirectory(lastDirectory);
+  if (fbxFiles.empty()) {
+    std::cout << "No .fbx files found in " << lastDirectory
+              << ". You can still type a full FBX path.\n";
+  } else {
+    std::cout << "Choose an FBX file from " << lastDirectory << ":\n";
+    for (std::size_t fileIndex = 0; fileIndex < fbxFiles.size(); ++fileIndex) {
+      std::cout << "  " << fileIndex + 1 << ") "
+                << fbxFiles[fileIndex].filename().string() << '\n';
+    }
+  }
+
+  std::cout << "File number or path (empty = cancel): ";
+  std::string fileInput;
+  std::getline(std::cin, fileInput);
+  if (fileInput.empty()) {
+    std::cout << "FBX loading canceled.\n";
+    return std::nullopt;
+  }
+
+  const bool isNumber = std::all_of(
+      fileInput.begin(), fileInput.end(),
+      [](unsigned char character) { return std::isdigit(character) != 0; });
+  if (isNumber) {
+    std::size_t selectedIndex = 0;
+    for (char digit : fileInput) {
+      selectedIndex =
+          selectedIndex * 10 + static_cast<std::size_t>(digit - '0');
+    }
+    if (selectedIndex > 0 && selectedIndex <= fbxFiles.size()) {
+      return fbxFiles[selectedIndex - 1];
+    }
+    std::cout << "Invalid FBX number: " << fileInput << '\n';
+    return std::nullopt;
+  }
+
+  std::filesystem::path selectedPath = fileInput;
+  if (selectedPath.is_relative()) {
+    selectedPath = lastDirectory / selectedPath;
+  }
+  lastDirectory = selectedPath.parent_path().empty()
+                      ? lastDirectory
+                      : selectedPath.parent_path();
+  return selectedPath;
 }
 
 Vec3 transformPoint(const aiMatrix4x4 &matrix, const aiVector3D &point) {
@@ -527,7 +612,7 @@ void updateWindowTitle(GLFWwindow *window, const Player &player,
   std::string title =
       "Simple First Person Engine - Animation: " + player.animation.debugName();
   if (editor.isEnabled) {
-    title += " - EDITOR: L off, O load FBX, arrows move, +/- scale";
+    title += " - EDITOR: L off, O choose FBX, arrows move, +/- scale";
   } else {
     title += " - L map editor";
   }
@@ -597,7 +682,13 @@ int main(int argc, char **argv) {
   Camera camera;
   EditorState editor;
   if (argc > 1) {
-    editor.modelPath = argv[1];
+    const std::filesystem::path startupPath = argv[1];
+    editor.modelDirectory = std::filesystem::is_directory(startupPath)
+                                ? startupPath
+                                : startupPath.parent_path();
+    if (editor.modelDirectory.empty()) {
+      editor.modelDirectory = DefaultEditorModelDirectory;
+    }
   }
   MapObject sportsCar;
   sportsCar.model = loadFbxModel(SportsCarModelPath);
@@ -606,8 +697,9 @@ int main(int argc, char **argv) {
   sportsCar.scale = SportsCarScale;
   camera.position = player.feetPosition + Vec3{0.0F, PlayerEyeHeight, 0.0F};
 
-  std::cout << "Press L to toggle map editor. In editor press O to load FBX: "
-            << editor.modelPath << '\n';
+  std::cout << "Press L to toggle map editor. In editor press O to choose an "
+               "FBX file from a folder. Default folder: "
+            << editor.modelDirectory << '\n';
 
   float previousTime = static_cast<float>(glfwGetTime());
   while (glfwWindowShouldClose(window) == GLFW_FALSE) {
