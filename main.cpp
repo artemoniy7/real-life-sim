@@ -8,9 +8,22 @@
 
 namespace {
 
+enum class Gender { Woman, Man, NonBinary };
+
+std::string GenderText(Gender gender) {
+    switch (gender) {
+        case Gender::Woman: return "женщина";
+        case Gender::Man: return "мужчина";
+        case Gender::NonBinary: return "небинарный человек";
+    }
+    return "человек";
+}
+
 struct Character {
     std::string name;
     std::string profession;
+    std::string trait = "любознательный";
+    Gender gender = Gender::NonBinary;
     int age = 24;
     int energy = 75;
     int hunger = 25;
@@ -18,6 +31,8 @@ struct Character {
     int health = 80;
     int money = 120;
     int skills = 1;
+    int confidence = 50;
+    int protection = 2;
 };
 
 struct Home {
@@ -31,8 +46,11 @@ struct Person {
     std::string name;
     std::string profession;
     std::string location;
+    int age = 25;
     int friendship = 0;
+    int romance = 0;
     bool acquainted = false;
+    bool partner = false;
 };
 
 struct City {
@@ -44,11 +62,11 @@ struct City {
         "Дом", "Кафе «Уголок»", "Городской парк", "Библиотека", "Рынок", "Офис"
     };
     std::vector<Person> people = {
-        {"Мира", "фотограф", "Городской парк"},
-        {"Денис", "бариста", "Кафе «Уголок»"},
-        {"София", "библиотекарь", "Библиотека"},
-        {"Илья", "продавец", "Рынок"},
-        {"Лев", "разработчик", "Офис"}
+        {"Мира", "фотограф", "Городской парк", 27},
+        {"Денис", "бариста", "Кафе «Уголок»", 26},
+        {"София", "библиотекарь", "Библиотека", 31},
+        {"Илья", "продавец", "Рынок", 29},
+        {"Лев", "разработчик", "Офис", 28}
     };
 };
 
@@ -100,6 +118,11 @@ std::string DateText(const City& city) {
     return result.str();
 }
 
+std::string WeatherText(const City& city) {
+    const std::string weather[] = {"солнечно", "облачно", "лёгкий дождь", "ясно", "ветрено"};
+    return weather[city.day % 5];
+}
+
 void Apply(Character& hero, int energy, int hunger, int mood, int health, int money) {
     hero.energy = Clamp(hero.energy + energy);
     hero.hunger = Clamp(hero.hunger + hunger);
@@ -138,16 +161,19 @@ void AdvanceTime(Character& hero, Home& home, City& city, int minutes) {
 void ShowStatus(const Character& hero, const Home& home, const City& city) {
     std::cout << "====================================================\n";
     std::cout << city.name << " | " << DateText(city) << " (день " << city.day << ") | " << TimeText(city)
-              << " | население: " << city.population << "\n";
+              << " | " << WeatherText(city) << "\n";
     std::cout << "====================================================\n";
-    std::cout << hero.name << ", " << hero.age << " лет — " << hero.profession << "\n";
+    std::cout << hero.name << ", " << hero.age << " лет, " << GenderText(hero.gender)
+              << " — " << hero.profession << ", " << hero.trait << "\n";
     std::cout << "Энергия: " << std::setw(3) << hero.energy
               << "  Сытость: " << std::setw(3) << 100 - hero.hunger
               << "  Настроение: " << std::setw(3) << hero.mood
               << "  Здоровье: " << std::setw(3) << hero.health << "\n";
-    std::cout << "Деньги: " << hero.money << " мон. | Навык профессии: " << hero.skills << "\n";
+    std::cout << "Деньги: " << hero.money << " мон. | Навык профессии: " << hero.skills
+              << " | Уверенность: " << hero.confidence << "\n";
     std::cout << "Дом: " << home.district << " (уют: " << home.comfort
               << ", запас еды: " << home.food << ")\n";
+    std::cout << "Личная жизнь: уважение границ включено | защита: " << hero.protection << "\n";
 }
 
 void ShowMap(const City& city) {
@@ -159,8 +185,8 @@ void ShowPeopleAt(const City& city, const std::string& location) {
     bool found = false;
     for (const Person& person : city.people) {
         if (person.location == location) {
-            std::cout << "  - " << person.name << ", " << person.profession;
-            if (person.acquainted) std::cout << " (дружба: " << person.friendship << ')';
+            std::cout << "  - " << person.name << ", " << person.age << " лет, " << person.profession;
+            if (person.acquainted) std::cout << " (дружба: " << person.friendship << ", симпатия: " << person.romance << ')';
             std::cout << "\n";
             found = true;
         }
@@ -178,13 +204,14 @@ void Interact(Character& hero, Home& home, City& city, const std::string& locati
     }
     std::cout << "\n--- ЛЮДИ РЯДОМ ---\n";
     for (std::size_t i = 0; i < present.size(); ++i)
-        std::cout << "  " << i + 1 << ". " << city.people[present[i]].name << " — " << city.people[present[i]].profession << "\n";
+        std::cout << "  " << i + 1 << ". " << city.people[present[i]].name << " — " << city.people[present[i]].age
+                  << " лет, " << city.people[present[i]].profession << "\n";
     const int selected = AskChoice("С кем поговорить (0 — назад): ", 0, static_cast<int>(present.size()));
     if (selected == 0) return;
     Person& person = city.people[present[selected - 1]];
 
-    std::cout << "\n1. Познакомиться / поболтать\n2. Угостить кофе (12 мон.)\n3. Предложить помощь\n0. Назад\n";
-    switch (AskChoice("Действие: ", 0, 3)) {
+    std::cout << "\n1. Познакомиться / поболтать\n2. Угостить кофе (12 мон.)\n3. Предложить помощь\n4. Пригласить на прогулку\n5. Обсудить личную близость\n0. Назад\n";
+    switch (AskChoice("Действие: ", 0, 5)) {
         case 1:
             person.acquainted = true;
             person.friendship = Clamp(person.friendship + 8);
@@ -207,6 +234,41 @@ void Interact(Character& hero, Home& home, City& city, const std::string& locati
             Apply(hero, -12, 8, 6, 0, 0);
             AdvanceTime(hero, home, city, 60);
             std::cout << "Вы помогли " << person.name << ". Это не осталось незамеченным.\n";
+            break;
+        case 4:
+            if (!person.acquainted || person.friendship < 15) {
+                std::cout << "Сначала лучше узнать друг друга.\n";
+                break;
+            }
+            person.romance = Clamp(person.romance + 10);
+            person.friendship = Clamp(person.friendship + 5);
+            Apply(hero, -8, 8, 12, 0, 0);
+            AdvanceTime(hero, home, city, 75);
+            std::cout << "Прогулка прошла тепло. Симпатия выросла.\n";
+            break;
+        case 5:
+            if (!person.acquainted || person.friendship < 30 || person.romance < 20) {
+                std::cout << "Для такого разговора нужны доверие и взаимная симпатия.\n";
+                break;
+            }
+            std::cout << "Обсудите границы, взаимное желание и безопасность. Продолжить?\n"
+                      << "1. Да, только при ясном согласии\n0. Отмена\n";
+            if (AskChoice("Выбор: ", 0, 1) == 0) {
+                std::cout << "Вы уважительно отложили разговор.\n";
+                break;
+            }
+            if (hero.protection <= 0) {
+                std::cout << "Для безопасной близости нужна защита. Её можно купить на рынке.\n";
+                break;
+            }
+            --hero.protection;
+            person.romance = Clamp(person.romance + 16);
+            person.friendship = Clamp(person.friendship + 6);
+            Apply(hero, -10, 5, 15, 0, 0);
+            AdvanceTime(hero, home, city, 90);
+            if (person.romance >= 50) person.partner = true;
+            std::cout << "Вы провели личное время бережно и по взаимному согласию.\n";
+            if (person.partner) std::cout << person.name << " теперь считает вас партнёром.\n";
             break;
     }
 }
@@ -254,8 +316,13 @@ void VisitCity(Character& hero, Home& home, City& city) {
         case 3: Apply(hero, -12, 10, 18, 3, 0); AdvanceTime(hero, home, city, 50); std::cout << "Прогулка в парке освежила мысли.\n"; break;
         case 4: Apply(hero, -10, 6, 8, 0, 0); ++hero.skills; AdvanceTime(hero, home, city, 90); std::cout << "Несколько часов за книгами повысили навык.\n"; break;
         case 5:
-            if (hero.money >= 15) { hero.money -= 15; home.food += 3; AdvanceTime(hero, home, city, 30); std::cout << "Вы купили продукты на три приёма пищи.\n"; }
-            else std::cout << "На продукты нужно 15 монет.\n";
+            std::cout << "1. Продукты (15 мон.)\n2. Защита (10 мон.)\n0. Назад\n";
+            {
+                const int purchase = AskChoice("Покупка: ", 0, 2);
+                if (purchase == 1 && hero.money >= 15) { hero.money -= 15; home.food += 3; AdvanceTime(hero, home, city, 30); std::cout << "Вы купили продукты на три приёма пищи.\n"; }
+                else if (purchase == 2 && hero.money >= 10) { hero.money -= 10; ++hero.protection; AdvanceTime(hero, home, city, 15); std::cout << "Вы купили защиту.\n"; }
+                else if (purchase != 0) std::cout << "Недостаточно денег.\n";
+            }
             break;
         case 6:
             if (hero.energy < 15) std::cout << "Слишком мало сил для работы.\n";
@@ -268,7 +335,11 @@ void ShowContacts(const City& city) {
     std::cout << "\n--- ЗНАКОМЫЕ ---\n";
     bool found = false;
     for (const Person& person : city.people) {
-        if (person.acquainted) { std::cout << "  " << person.name << " — " << person.profession << ", дружба: " << person.friendship << "\n"; found = true; }
+        if (person.acquainted) {
+            std::cout << "  " << person.name << " — " << person.profession << ", дружба: " << person.friendship
+                      << ", симпатия: " << person.romance << (person.partner ? " | партнёр" : "") << "\n";
+            found = true;
+        }
     }
     if (!found) std::cout << "  Пока никого. Познакомьтесь с людьми в городе.\n";
 }
@@ -283,8 +354,22 @@ int main() {
     std::cout << "========================================\n        REAL LIFE SIM: НАЧАЛО\n========================================\n";
     std::cout << "Имя главного героя [Алекс]: "; std::getline(std::cin, hero.name);
     if (hero.name.empty()) hero.name = "Алекс";
+    std::cout << "Пол / гендер\n1. Женщина\n2. Мужчина\n3. Небинарный человек\n";
+    switch (AskChoice("Выбор: ", 1, 3)) {
+        case 1: hero.gender = Gender::Woman; break;
+        case 2: hero.gender = Gender::Man; break;
+        case 3: hero.gender = Gender::NonBinary; break;
+    }
+    hero.age = AskChoice("Возраст (18-80): ", 18, 80);
     std::cout << "Профессия [стажёр]: "; std::getline(std::cin, hero.profession);
     if (hero.profession.empty()) hero.profession = "стажёр";
+    std::cout << "Черта характера\n1. Общительный (+10 уверенности)\n2. Бережливый (+30 монет)\n3. Спортивный (+10 здоровья)\n4. Любознательный (+1 навык)\n";
+    switch (AskChoice("Выбор: ", 1, 4)) {
+        case 1: hero.trait = "общительный"; hero.confidence += 10; break;
+        case 2: hero.trait = "бережливый"; hero.money += 30; break;
+        case 3: hero.trait = "спортивный"; hero.health += 10; break;
+        case 4: hero.trait = "любознательный"; ++hero.skills; break;
+    }
 
     while (true) {
         ClearScreen();
