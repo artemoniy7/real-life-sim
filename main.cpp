@@ -1,328 +1,215 @@
-// main.cpp
-#include <iostream>
-#include <string>
-#include <iomanip>
-#include <limits>
-#include <vector>
 #include <algorithm>
-#include <windows.h>
-#include <clocale>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <string>
+#include <vector>
 
-#include "Woman.h"
-#include "ManIntim.h"
-#include "utils.h"
+namespace {
 
-// ============================================================
-//   УТИЛИТЫ
-// ============================================================
+struct Character {
+    std::string name;
+    std::string profession;
+    int age = 24;
+    int energy = 75;
+    int hunger = 25;
+    int mood = 65;
+    int health = 80;
+    int money = 120;
+    int skills = 1;
+};
+
+struct Home {
+    std::string district = "Тихий квартал";
+    int comfort = 55;
+    int food = 4;
+    int rent = 35;
+};
+
+struct City {
+    std::string name = "Люмен";
+    int population = 12400;
+    int day = 1;
+    std::vector<std::string> places = {
+        "Дом", "Кафе «Уголок»", "Городской парк", "Библиотека", "Рынок", "Офис"
+    };
+};
+
+int Clamp(int value) {
+    return std::clamp(value, 0, 100);
+}
 
 void ClearScreen() {
-#ifdef _WIN32
-    system("cls");
-#else
-    system("clear");
-#endif
+    // ANSI works in contemporary terminals and does not require platform headers.
+    std::cout << "\033[2J\033[H";
 }
 
-int AskInt(const std::string& prompt, int min, int max) {
-    int value;
+int AskChoice(const std::string& prompt, int min, int max) {
+    int value = 0;
     while (true) {
         std::cout << prompt;
-        if (std::cin >> value && value >= min && value <= max) return value;
+        if (std::cin >> value && value >= min && value <= max) {
+            std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+            return value;
+        }
+        if (std::cin.eof()) {
+            return min;
+        }
         std::cin.clear();
         std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-        std::cout << "  ! Введите число от " << min << " до " << max << "\n";
-    }
-}
-
-float AskFloat(const std::string& prompt, float min, float max) {
-    float value;
-    while (true) {
-        std::cout << prompt;
-        if (std::cin >> value && value >= min && value <= max) return value;
-        std::cin.clear();
-        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-        std::cout << "  ! Введите число от " << min << " до " << max << "\n";
+        std::cout << "Введите число от " << min << " до " << max << ".\n";
     }
 }
 
 void Pause() {
     std::cout << "\n[Enter] чтобы продолжить...";
-    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-    std::cin.get();
+    std::string line;
+    std::getline(std::cin, line);
 }
 
-// ============================================================
-//   СОСТОЯНИЕ
-// ============================================================
-
-void ShowStatus(const Woman& w, const ManIntim& m) {
-    std::cout << "==================== СОСТОЯНИЕ ====================\n";
-    std::cout << "  ЖЕНЩИНА: " << w.GetName()
-              << " | Возбужд: " << w.GetIntim().GetArousal() << "%"
-              << " | Смазка: " << std::fixed << std::setprecision(1)
-              << w.GetIntim().GetLubrication() << "%"
-              << " | Боль: " << w.GetIntim().GetPainLevel() << "%"
-              << " | Оргазмов: " << w.GetTotalOrgasms() << "\n";
-    if (w.GetIntim().IsInRefractory())
-        std::cout << "    (в рефрактерном периоде)\n";
-    std::cout << "  МУЖЧИНА: Возбужд: " << m.GetArousal() << "%"
-              << " | Эрекция: " << (m.IsErect() ? "Да" : "Нет")
-              << " (" << (int)(m.GetErectionQuality() * 100) << "%)"
-              << " | Выносл: " << (int)m.GetCurrentStamina() << "/" << (int)m.GetStamina()
-              << "\n";
-    std::cout << "===================================================\n";
+void Apply(Character& hero, int energy, int hunger, int mood, int health, int money) {
+    hero.energy = Clamp(hero.energy + energy);
+    hero.hunger = Clamp(hero.hunger + hunger);
+    hero.mood = Clamp(hero.mood + mood);
+    hero.health = Clamp(hero.health + health);
+    hero.money += money;
 }
 
-// ============================================================
-//   СОСТОЯНИЕ СЕССИИ
-// ============================================================
+void ShowStatus(const Character& hero, const Home& home, const City& city) {
+    std::cout << "====================================================\n";
+    std::cout << city.name << " | день " << city.day << " | население: " << city.population << "\n";
+    std::cout << "====================================================\n";
+    std::cout << hero.name << ", " << hero.age << " лет — " << hero.profession << "\n";
+    std::cout << "Энергия: " << std::setw(3) << hero.energy
+              << "  Сытость: " << std::setw(3) << 100 - hero.hunger
+              << "  Настроение: " << std::setw(3) << hero.mood
+              << "  Здоровье: " << std::setw(3) << hero.health << "\n";
+    std::cout << "Деньги: " << hero.money << " мон. | Навык профессии: " << hero.skills << "\n";
+    std::cout << "Дом: " << home.district << " (уют: " << home.comfort
+              << ", запас еды: " << home.food << ")\n";
+}
 
-struct SessionState {
-    Hole hole = Hole::Vagina;
-    float depth = 0.0f;
-    float diameter = 4.0f;
-    float intensity = 50.0f;
-    bool inside = false;
-    bool active = false;
-};
-
-// ============================================================
-//   ОДИН ТОЛЧОК
-// ============================================================
-
-void DoStroke(Woman& woman, ManIntim& man, SessionState& s, float delta) {
-    // Мужчина тратит силы
-    man.DrainStamina(1.0f);
-    man.ChangeArousal(2);
-
-    // Новая глубина
-    float max_d = woman.GetIntim().GetHoleMaxDepth(s.hole);
-    float new_depth = std::clamp(s.depth + delta, 0.0f, max_d);
-
-    // Зона по глубине
-    ErogenousZone zone = woman.GetIntim().GetZoneByDepth(s.hole, new_depth);
-
-    // Стимуляция
-    float pleasure = woman.StimulateZone(zone, s.intensity, new_depth, s.diameter);
-
-    s.depth = new_depth;
-    s.inside = (new_depth > 0.5f);
-
-    std::cout << "  Толчок " << (delta > 0 ? "ВХОД" : "ВЫХОД")
-              << " | Глубина: " << std::fixed << std::setprecision(1) << new_depth << " см"
-              << " | Зона: " << woman.GetIntim().GetZoneName(zone)
-              << "\n  Удовольствие: " << pleasure
-              << " | Возбужд: " << woman.GetIntim().GetArousal() << "%"
-              << " | Боль: " << woman.GetIntim().GetPainLevel() << "%\n";
-
-    // Автоматический оргазм женщины
-    if (!woman.GetIntim().IsInRefractory() &&
-        woman.GetIntim().GetArousal() >= 85) {
-        if (woman.GetIntim().CheckOrgasm()) {
-            std::cout << "  *** ОРГАЗМ ЖЕНЩИНЫ! ***\n";
-            SexEvent ev;
-            ev.day = woman.GetDaysCount();
-            ev.max_pleasure = pleasure;
-            ev.max_pain = woman.GetIntim().GetPainLevel();
-            ev.orgasm = true;
-            ev.first_time_zone = false;
-            woman.LogEvent(ev);
-        }
+void ShowMap(const City& city) {
+    std::cout << "\n--- КАРТА ГОРОДА " << city.name << " ---\n";
+    for (std::size_t i = 0; i < city.places.size(); ++i) {
+        std::cout << "  " << i + 1 << ". " << city.places[i] << "\n";
     }
 }
 
-// ============================================================
-//   МЕНЮ ИНТИМА
-// ============================================================
-
-void IntimMenu(Woman& woman, ManIntim& man) {
-    SessionState s;
-
-    while (true) {
-        ClearScreen();
-        ShowStatus(woman, man);
-
-        std::cout << "\n--- СЕССИЯ ---\n";
-        if (s.active) {
-            std::cout << "  Отверстие: " << woman.GetIntim().GetHoleName(s.hole) << "\n";
-            std::cout << "  Глубина: " << std::fixed << std::setprecision(1)
-                      << s.depth << " / " << woman.GetIntim().GetHoleMaxDepth(s.hole) << " см\n";
-            std::cout << "  Диаметр: " << s.diameter << " см\n";
-            std::cout << "  Интенсивность: " << s.intensity << "%\n";
-            std::cout << "  Состояние: " << (s.inside ? "ВНУТРИ" : "СНАРУЖИ") << "\n";
-        } else {
-            std::cout << "  (сессия не начата)\n";
-        }
-
-        std::cout << "\n--- ДЕЙСТВИЯ ---\n";
-        if (!s.active) {
-            std::cout << "  1. Начать сессию\n";
-        } else {
-            std::cout << "  2. Толчок ВНУТРЬ  (+1 см)\n";
-            std::cout << "  3. Толчок НАРУЖУ  (-1 см)\n";
-            std::cout << "  4. Глубокий ВНУТРЬ (+3 см)\n";
-            std::cout << "  5. Глубокий НАРУЖУ (-3 см)\n";
-            std::cout << "  6. Изменить интенсивность\n";
-            std::cout << "  7. Изменить диаметр\n";
-            std::cout << "  8. Сменить отверстие\n";
-        }
-        std::cout << "  9. КОНЧИТЬ (мужчине)\n";
-        std::cout << " 10. Показать зоны\n";
-        std::cout << " 11. Показать статистику\n";
-        std::cout << "  0. Завершить сессию\n";
-
-        int choice = AskInt("Выбор: ", 0, 11);
-
-        if (choice == 0) {
-            s.active = false;
-            s.depth = 0.0f;
-            s.inside = false;
+void GoHome(Character& hero, Home& home) {
+    std::cout << "\nВы дома.\n1. Отдохнуть\n2. Приготовить еду\n3. Обустроить дом (20 мон.)\n0. Назад\n";
+    switch (AskChoice("Выбор: ", 0, 3)) {
+        case 1:
+            Apply(hero, 35 + home.comfort / 10, 8, 8, 3, 0);
+            std::cout << "Отдых восстановил силы.\n";
             break;
-        }
-
-        if (choice == 1 && !s.active) {
-            std::cout << "\n--- ВЫБОР ОТВЕРСТИЯ ---\n";
-            std::cout << "  1. Влагалище (" << woman.GetIntim().GetVaginalDepth() << " см)\n";
-            std::cout << "  2. Анус ("      << woman.GetIntim().GetAnalDepth()    << " см)\n";
-            std::cout << "  3. Рот ("       << woman.GetIntim().GetMouthDepth()   << " см)\n";
-            std::cout << "  4. Уретра ("    << woman.GetIntim().GetUrethraDepth() << " см)\n";
-            std::cout << "  0. Отмена\n";
-
-            int h = AskInt("Отверстие: ", 0, 4);
-            if (h == 0) continue;
-            switch (h) {
-                case 1: s.hole = Hole::Vagina; break;
-                case 2: s.hole = Hole::Anus;   break;
-                case 3: s.hole = Hole::Mouth;  break;
-                case 4: s.hole = Hole::Urethra;break;
+        case 2:
+            if (home.food > 0) {
+                --home.food;
+                Apply(hero, 5, -35, 10, 2, 0);
+                std::cout << "Домашняя еда вернула настроение и сытость.\n";
+            } else {
+                std::cout << "Запас еды закончился — загляните на рынок.\n";
             }
-
-            s.diameter = AskFloat("Диаметр (0.5-8): ", 0.5f, 8.0f);
-            s.intensity = AskFloat("Интенсивность (10-100): ", 10.0f, 100.0f);
-
-            s.depth = 0.0f;
-            s.inside = false;
-            s.active = true;
-
-            std::cout << "  Сессия начата: " << woman.GetIntim().GetHoleName(s.hole) << "\n";
-            Pause();
-        }
-        else if (s.active && choice == 2) { ClearScreen(); std::cout << "--- ТОЛЧОК ВНУТРЬ ---\n";  DoStroke(woman, man, s, +1.0f); Pause(); }
-        else if (s.active && choice == 3) { ClearScreen(); std::cout << "--- ТОЛЧОК НАРУЖУ ---\n";  DoStroke(woman, man, s, -1.0f); Pause(); }
-        else if (s.active && choice == 4) { ClearScreen(); std::cout << "--- ГЛУБОКИЙ ВНУТРЬ ---\n"; DoStroke(woman, man, s, +3.0f); Pause(); }
-        else if (s.active && choice == 5) { ClearScreen(); std::cout << "--- ГЛУБОКИЙ НАРУЖУ ---\n"; DoStroke(woman, man, s, -3.0f); Pause(); }
-        else if (s.active && choice == 6) { s.intensity = AskFloat("Интенсивность (10-100): ", 10.0f, 100.0f); }
-        else if (s.active && choice == 7) { s.diameter  = AskFloat("Диаметр (0.5-8): ", 0.5f, 8.0f); }
-        else if (s.active && choice == 8) {
-            std::cout << "\n--- СМЕНА ОТВЕРСТИЯ ---\n";
-            std::cout << "  1. Влагалище\n  2. Анус\n  3. Рот\n  4. Уретра\n  0. Отмена\n";
-            int h = AskInt("Отверстие: ", 0, 4);
-            if (h == 0) continue;
-            switch (h) {
-                case 1: s.hole = Hole::Vagina; break;
-                case 2: s.hole = Hole::Anus;   break;
-                case 3: s.hole = Hole::Mouth;  break;
-                case 4: s.hole = Hole::Urethra;break;
+            break;
+        case 3:
+            if (hero.money >= 20) {
+                hero.money -= 20;
+                home.comfort = Clamp(home.comfort + 10);
+                std::cout << "В доме стало уютнее.\n";
+            } else {
+                std::cout << "Не хватает денег.\n";
             }
-            s.depth = 0.0f;
-            s.inside = false;
-            std::cout << "  Отверстие сменено: " << woman.GetIntim().GetHoleName(s.hole) << "\n";
-            Pause();
-        }
-        else if (choice == 9) {
-            if (!man.IsErect()) {
-                std::cout << "  Мужчина не готов.\n";
-                Pause();
-                continue;
-            }
-            man.AddOrgasm();
-            man.ChangeArousal(-80);
-            man.SetErect(false);
-            man.DrainStamina(20.0f);
-            std::cout << "\n*** ЭЯКУЛЯЦИЯ МУЖЧИНЫ! ***\n";
-            std::cout << "Выносливость: " << (int)man.GetCurrentStamina()
-                      << "/" << (int)man.GetStamina() << "\n";
-            Pause();
-        }
-        else if (choice == 10) { ClearScreen(); woman.ShowZonesInfo(); Pause(); }
-        else if (choice == 11) { ClearScreen(); woman.ShowStats(); woman.ShowHistory(); Pause(); }
+            break;
     }
 }
 
-// ============================================================
-//   ГЛАВНОЕ МЕНЮ
-// ============================================================
+void VisitCity(Character& hero, Home& home, const City& city) {
+    ShowMap(city);
+    const int place = AskChoice("Куда пойти (0 — назад): ", 0, static_cast<int>(city.places.size()));
+    switch (place) {
+        case 1: GoHome(hero, home); break;
+        case 2:
+            if (hero.money >= 12) {
+                Apply(hero, 5, -25, 14, 0, -12);
+                std::cout << "За чашкой кофе вы встретили знакомых.\n";
+            } else std::cout << "В кошельке недостаточно денег для кафе.\n";
+            break;
+        case 3: Apply(hero, -12, 10, 18, 3, 0); std::cout << "Прогулка в парке освежила мысли.\n"; break;
+        case 4: Apply(hero, -10, 6, 8, 0, 0); ++hero.skills; std::cout << "Несколько часов за книгами повысили навык.\n"; break;
+        case 5:
+            if (hero.money >= 15) {
+                hero.money -= 15;
+                home.food += 3;
+                std::cout << "Вы купили продукты на три приёма пищи.\n";
+            } else std::cout << "На продукты нужно 15 монет.\n";
+            break;
+        case 6:
+            if (hero.energy < 15) {
+                std::cout << "Слишком мало сил для работы.\n";
+            } else {
+                const int income = 18 + hero.skills * 4;
+                Apply(hero, -25, 18, -5, 0, income);
+                std::cout << "Рабочий день завершён. Заработано: " << income << " мон.\n";
+            }
+            break;
+    }
+}
+
+void AdvanceDay(Character& hero, Home& home, City& city) {
+    ++city.day;
+    Apply(hero, 12 + home.comfort / 12, 12, 2, hero.hunger > 75 ? -7 : 1, 0);
+    if (city.day % 7 == 1) {
+        if (hero.money >= home.rent) {
+            hero.money -= home.rent;
+            std::cout << "Оплачена недельная аренда: " << home.rent << " мон.\n";
+        } else {
+            home.comfort = std::max(0, home.comfort - 8);
+            std::cout << "Не удалось оплатить аренду. Уют дома снизился.\n";
+        }
+    }
+    std::cout << "Наступил день " << city.day << ".\n";
+}
+
+}  // namespace
 
 int main() {
-    SetConsoleOutputCP(CP_UTF8);
-    SetConsoleCP(CP_UTF8);
-    system("chcp 65001 > nul");
-    setlocale(LC_ALL, "ru_RU.UTF-8");
+    Character hero;
+    Home home;
+    City city;
 
-    ClearScreen();
     std::cout << "========================================\n";
-    std::cout << "   ИНТИМ-СИМУЛЯТОР (интерактивный)\n";
-    std::cout << "========================================\n\n";
-
-    std::string woman_name;
-    std::cout << "Имя женщины [Alice]: ";
-    std::getline(std::cin, woman_name);
-    if (woman_name.empty()) woman_name = "Alice";
-
-    Woman alice(woman_name, 5000);
-    alice.GetIntim().SetMaxBreast(BreastSize::large);
-    alice.GetIntim().SetCurrentBreastSize(BreastSize::large);
-
-    ManIntim bob;
-    bob.SetLength(16.5f);
-    bob.SetGirth(12.5f);
-    bob.SetStamina(80.0f);
-    bob.SetSkill(0.6f);
-
-    std::cout << "\nПерсонажи созданы. Начинаем.\n";
-    Pause();
+    std::cout << "        REAL LIFE SIM: НАЧАЛО\n";
+    std::cout << "========================================\n";
+    std::cout << "Имя главного героя [Алекс]: ";
+    std::getline(std::cin, hero.name);
+    if (hero.name.empty()) hero.name = "Алекс";
+    std::cout << "Профессия [стажёр]: ";
+    std::getline(std::cin, hero.profession);
+    if (hero.profession.empty()) hero.profession = "стажёр";
 
     while (true) {
         ClearScreen();
-        std::cout << "========== ГЛАВНОЕ МЕНЮ ==========\n";
-        std::cout << "  1. Интим (стимуляция)\n";
-        std::cout << "  2. Показать женщину\n";
-        std::cout << "  3. Показать мужчину\n";
-        std::cout << "  4. Пропустить 1 день\n";
-        std::cout << "  5. Пропустить 10 дней\n";
-        std::cout << "  6. Статистика и история\n";
-        std::cout << "  0. Выход\n";
-        std::cout << "===================================\n";
-
-        int choice = AskInt("Выбор: ", 0, 6);
+        ShowStatus(hero, home, city);
+        std::cout << "\n--- ДЕЙСТВИЯ ---\n"
+                  << "  1. Отправиться в город\n"
+                  << "  2. Зайти домой\n"
+                  << "  3. Осмотреть карту\n"
+                  << "  4. Завершить день\n"
+                  << "  0. Выйти из симуляции\n";
+        const int choice = AskChoice("Выбор: ", 0, 4);
         if (choice == 0) break;
 
-        switch (choice) {
-            case 1:
-                if (!bob.IsErect()) {
-                    bob.ChangeArousal(50);
-                    bob.SetErect(true);
-                }
-                IntimMenu(alice, bob);
-                break;
-            case 2: ClearScreen(); alice.Show(); Pause(); break;
-            case 3: ClearScreen(); bob.Show();   Pause(); break;
-            case 4: alice.AdvanceTime(1);  bob.RestoreStamina(10.0f); std::cout << "  Прошёл 1 день.\n"; Pause(); break;
-            case 5: alice.AdvanceTime(10); bob.RestoreStamina(40.0f); std::cout << "  Прошло 10 дней.\n"; Pause(); break;
-            case 6: ClearScreen(); alice.ShowStats(); alice.ShowHistory(); Pause(); break;
-        }
+        ClearScreen();
+        if (choice == 1) VisitCity(hero, home, city);
+        if (choice == 2) GoHome(hero, home);
+        if (choice == 3) ShowMap(city);
+        if (choice == 4) AdvanceDay(hero, home, city);
+        Pause();
     }
 
     ClearScreen();
-    std::cout << "========================================\n";
-    std::cout << "   ИТОГИ\n";
-    std::cout << "========================================\n";
-    alice.Show();
-    alice.ShowStats();
-    bob.Show();
-
-    std::cout << "\nВыход.\n";
+    std::cout << "Спасибо за игру, " << hero.name << ".\n";
+    ShowStatus(hero, home, city);
     return 0;
 }
-//g++ -std=c++17 -O2 -Wall -o game main.cpp Woman.cpp WomanIntim.cpp ManIntim.cpp utils.cpp
