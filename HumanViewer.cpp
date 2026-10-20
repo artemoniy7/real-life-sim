@@ -51,7 +51,7 @@ void capsuleBetween(const double a[3], const double b[3], double radiusA, double
     glPopMatrix();
 }
 
-void limb(const double hip[3], const double knee[3], const double ankle[3],
+void segment(double ax,double ay,double az,double bx,double by,double bz,double ra,double rb) {\n    const double a[3]={ax,ay,az}, b[3]={bx,by,bz};\n    capsuleBetween(a,b,ra,rb);\n}\n\nvoid limb(const double hip[3], const double knee[3], const double ankle[3],
           double upperRadius, double lowerRadius) {
     sphere(hip[0],hip[1],hip[2],upperRadius,upperRadius,upperRadius);
     capsuleBetween(hip,knee,upperRadius*0.94,upperRadius*0.72);
@@ -76,7 +76,7 @@ void drawHuman() {
     sphere(0,0,1.57,0.32,0.18,0.26);         // chest
     sphere(0,0,1.72,0.335,0.17,0.16);        // shoulders / upper chest
     // Neck and head
-    capsuleBetween((double[3]){0,0,1.73}, (double[3]){0,0,1.88}, 0.085, 0.075);
+    segment(0,0,1.73, 0,0,1.88, 0.085,0.075);
     sphere(0,0,2.04,0.145,0.135,0.205);      // skull
     sphere(0,0.105,1.99,0.105,0.07,0.105);   // face plane / jaw
     // Ears
