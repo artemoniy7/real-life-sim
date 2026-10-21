@@ -97,20 +97,48 @@ void makeCity() {
         {0.57,0.65,0.60}, {0.78,0.61,0.48}, {0.66,0.62,0.73},
         {0.83,0.78,0.65}
     };
-    // Place each building in the middle of a city block, never on an asphalt lane.
-    // Road centers are multiples of ROAD_SPACING; block centers sit halfway between them.
+    // District-based layout: each block has its own character instead of one repeated footprint.
+    // Downtown is a cluster of slim towers with open space between them; outer blocks mix
+    // apartments, shops, detached houses and larger civic/industrial buildings.
+    auto addBuilding = [&](double x,double z,double w,double d,int floors,int paletteIndex) {
+        const int p=((paletteIndex%7)+7)%7;
+        buildings.push_back({x,z,w,d,floors*2.75,palette[p][0],palette[p][1],palette[p][2],floors});
+    };
     for (int gx=-3; gx<=2; ++gx) {
         for (int gz=-3; gz<=2; ++gz) {
-            // Keep the central block open as a small park.
-            if (gx==0 && gz==0) continue;
-            const double bx = (gx+0.5)*ROAD_SPACING + (((gx+gz)&1) ? 0.8 : -0.8);
-            const double bz = (gz+0.5)*ROAD_SPACING + (((gx-gz)&1) ? -0.8 : 0.8);
-            const double w = 7.2 + ((gx*gx+gz*gz)%3)*1.0;
-            const double d = 7.0 + ((std::abs(gx+gz)+2)%3)*0.9;
-            const int floors = 2 + ((std::abs(gx*7+gz*3)+1)%5);
-            const double h = floors*2.75;
-            const int p = (std::abs(gx*11+gz*5)+gx*gx+gz*gz)%7;
-            buildings.push_back({bx,bz,w,d,h,palette[p][0],palette[p][1],palette[p][2],floors});
+            if (gx==0 && gz==0) continue; // central park
+            const double cx=(gx+0.5)*ROAD_SPACING;
+            const double cz=(gz+0.5)*ROAD_SPACING;
+            const int seed=std::abs(gx*11+gz*5)+gx*gx+gz*gz;
+            const bool downtown=(gx>=-2 && gx<=-1 && gz>=0 && gz<=2);
+            const bool civic=((gx==2 && gz==1) || (gx==-3 && gz==-2));
+            const bool industrial=(gx==2 && gz<=-1);
+
+            if (downtown) {
+                // Three-to-four tower mini-district: a central landmark and smaller neighbors.
+                addBuilding(cx-2.65,cz-2.55,3.7,4.0,11+(seed%7),seed);
+                addBuilding(cx+2.45,cz-2.2,3.5,4.2,8+((seed+3)%6),seed+1);
+                addBuilding(cx-2.3,cz+2.7,4.1,3.6,7+((seed+1)%5),seed+2);
+                if ((seed%2)==0) addBuilding(cx+2.55,cz+2.65,3.4,3.5,6+((seed+4)%5),seed+4);
+            } else if (civic) {
+                // A broad low-rise public building with a taller entrance block.
+                addBuilding(cx,cz,8.2,7.2,2+(seed%2),seed+3);
+                addBuilding(cx,cz-2.9,3.0,1.8,4,seed+1);
+            } else if (industrial) {
+                // Warehouses and workshops have wide footprints and low roofs.
+                addBuilding(cx-1.5,cz,6.0,5.0,1+(seed%2),seed+4);
+                addBuilding(cx+2.2,cz+2.0,3.4,3.0,2,seed+2);
+            } else if ((seed%4)==0) {
+                // Residential block: several small houses instead of one large box.
+                addBuilding(cx-2.5,cz-2.2,3.3,3.2,2+(seed%2),seed);
+                addBuilding(cx+2.3,cz-2.3,3.5,3.0,2+((seed+1)%2),seed+2);
+                addBuilding(cx-2.2,cz+2.5,3.0,3.4,2,seed+3);
+                addBuilding(cx+2.45,cz+2.4,3.2,3.1,3,seed+4);
+            } else {
+                // Mixed-use blocks: a shop/office podium and mid-rise apartments.
+                addBuilding(cx+(((seed%2)?1.1:-1.1)),cz,6.0,6.1,3+(seed%4),seed);
+                if ((seed%3)!=1) addBuilding(cx+2.7,cz+2.8,3.0,2.8,2+(seed%3),seed+2);
+            }
         }
     }
     // Small park in the central block, plus trees along the streets.
@@ -155,10 +183,20 @@ void drawRoads() {
                     cube((x0+x1)/2,0.035,edge,x1-x0,0.10,1.15,0.62,0.61,0.56);
             }
         }
-        // Dashed center markings.
+        // Dashed center markings, stopping visually beneath pedestrian crossings.
         for (int p=-7; p<=7; ++p) {
             cube(c,0.027,p*11.0,0.12,0.015,4.1,0.83,0.80,0.66);
             cube(p*11.0,0.028,c,4.1,0.015,0.12,0.83,0.80,0.66);
+        }
+        // Zebra crossings on all four arms of every grid intersection.
+        // Each white bar is a flat box slightly above the asphalt to avoid z-fighting.
+        for (int side : {-1,1}) {
+            const double crossZ=c+side*(ROAD_HALF+0.95);
+            const double crossX=c+side*(ROAD_HALF+0.95);
+            for (double offset=-3.35; offset<=3.36; offset+=1.05) {
+                cube(c+offset,0.031,crossZ,0.62,0.018,0.42,0.91,0.90,0.82);
+                cube(crossX,0.032,c+offset,0.42,0.018,0.62,0.91,0.90,0.82);
+            }
         }
     }
 }
