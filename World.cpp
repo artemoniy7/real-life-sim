@@ -109,35 +109,39 @@ void makeCity() {
             if (gx==0 && gz==0) continue; // central park
             const double cx=(gx+0.5)*ROAD_SPACING;
             const double cz=(gz+0.5)*ROAD_SPACING;
+            // Keep entire blocks open where a diagonal connector crosses them.
+            const double diagonal45=std::abs(cz-cx);
+            const double diagonal30=std::abs(cz-(17.0+(cx+5.0)*-0.57735026919));
+            if (diagonal45<13.0 || diagonal30<10.5) continue;
             const int seed=std::abs(gx*11+gz*5)+gx*gx+gz*gz;
             const bool downtown=(gx>=-2 && gx<=-1 && gz>=0 && gz<=2);
             const bool civic=((gx==2 && gz==1) || (gx==-3 && gz==-2));
             const bool industrial=(gx==2 && gz<=-1);
 
             if (downtown) {
-                // Three-to-four tower mini-district: a central landmark and smaller neighbors.
-                addBuilding(cx-2.65,cz-2.55,3.7,4.0,11+(seed%7),seed);
-                addBuilding(cx+2.45,cz-2.2,3.5,4.2,8+((seed+3)%6),seed+1);
-                addBuilding(cx-2.3,cz+2.7,4.1,3.6,7+((seed+1)%5),seed+2);
-                if ((seed%2)==0) addBuilding(cx+2.55,cz+2.65,3.4,3.5,6+((seed+4)%5),seed+4);
+                // Chunky downtown towers sit on broad podiums, not needle-like footprints.
+                addBuilding(cx,cz,9.0,8.0,3,seed+3);                 // retail / parking podium
+                addBuilding(cx-2.0,cz-1.2,5.4,5.2,11+(seed%7),seed);
+                if ((seed%2)==0)
+                    addBuilding(cx+2.5,cz+2.0,4.8,4.7,7+((seed+2)%6),seed+2);
             } else if (civic) {
-                // A broad low-rise public building with a taller entrance block.
-                addBuilding(cx,cz,8.2,7.2,2+(seed%2),seed+3);
-                addBuilding(cx,cz-2.9,3.0,1.8,4,seed+1);
+                // Broad public building, clear front entrance and side wings.
+                addBuilding(cx,cz,10.2,8.4,2+(seed%2),seed+3);
+                addBuilding(cx,cz-3.2,4.2,2.0,4,seed+1);
             } else if (industrial) {
-                // Warehouses and workshops have wide footprints and low roofs.
-                addBuilding(cx-1.5,cz,6.0,5.0,1+(seed%2),seed+4);
-                addBuilding(cx+2.2,cz+2.0,3.4,3.0,2,seed+2);
+                // Wide warehouses with a separate office annex and loading-side yard.
+                addBuilding(cx-1.0,cz,8.0,6.6,1+(seed%2),seed+4);
+                addBuilding(cx+3.0,cz+2.8,4.2,3.8,2,seed+2);
             } else if ((seed%4)==0) {
-                // Residential block: several small houses instead of one large box.
-                addBuilding(cx-2.5,cz-2.2,3.3,3.2,2+(seed%2),seed);
-                addBuilding(cx+2.3,cz-2.3,3.5,3.0,2+((seed+1)%2),seed+2);
-                addBuilding(cx-2.2,cz+2.5,3.0,3.4,2,seed+3);
-                addBuilding(cx+2.45,cz+2.4,3.2,3.1,3,seed+4);
+                // Low residential cluster: squat houses with visibly wider footprints.
+                addBuilding(cx-2.6,cz-2.3,4.4,3.8,2+(seed%2),seed);
+                addBuilding(cx+2.4,cz-2.4,4.2,3.7,2+((seed+1)%2),seed+2);
+                addBuilding(cx-2.4,cz+2.5,4.0,4.2,2,seed+3);
+                addBuilding(cx+2.5,cz+2.4,4.1,3.9,3,seed+4);
             } else {
-                // Mixed-use blocks: a shop/office podium and mid-rise apartments.
-                addBuilding(cx+(((seed%2)?1.1:-1.1)),cz,6.0,6.1,3+(seed%4),seed);
-                if ((seed%3)!=1) addBuilding(cx+2.7,cz+2.8,3.0,2.8,2+(seed%3),seed+2);
+                // Mixed-use block: broad mid-rise, plus a lower rear annex when it fits.
+                addBuilding(cx+(((seed%2)?1.0:-1.0)),cz,8.0,7.4,3+(seed%4),seed);
+                if ((seed%3)!=1) addBuilding(cx-2.6,cz+2.8,4.0,3.8,2+(seed%3),seed+2);
             }
         }
     }
@@ -152,6 +156,20 @@ void makeCity() {
             trees.push_back({-WORLD_LIMIT*0.65, k*ROAD_SPACING+side*5.9, 0.85});
         }
     }
+}
+
+void drawAngledRoad(double x,double z,double length,double width,double angleDegrees) {
+    glPushMatrix();
+    glTranslated(x,0.012,z);
+    glRotated(angleDegrees,0,1,0);
+    cube(0,0,0,width,0.035,length,0.20,0.22,0.23);
+    // Broken center line follows the road's local axis.
+    for (double p=-length/2+5.0; p<length/2-2.0; p+=10.0)
+        cube(0,0.025,p,0.12,0.012,3.8,0.83,0.80,0.66);
+    // Low curb strips give the angled road a readable edge.
+    cube(-width/2-0.58,0.045,0,0.85,0.09,length,0.62,0.61,0.56);
+    cube( width/2+0.58,0.045,0,0.85,0.09,length,0.62,0.61,0.56);
+    glPopMatrix();
 }
 
 void drawRoads() {
@@ -199,6 +217,12 @@ void drawRoads() {
             }
         }
     }
+
+    // Secondary connectors break the rigid grid: one 45-degree diagonal and a
+    // shallower 30-degree bypass. Reserve the blocks near these routes for roads,
+    // so buildings do not spawn on top of the asphalt.
+    drawAngledRoad(0.0,0.0,220.0,7.2,45.0);
+    drawAngledRoad(-5.0,17.0,154.0,6.6,-30.0);
 }
 
 void drawBuilding(const Building& b) {
@@ -236,13 +260,15 @@ void drawTree(const Tree& t) {
     // GLU cylinders grow along local +Z; rotate that axis to world +Y so trees stand upright.
     glRotated(-90.0,1.0,0.0,0.0);
     color(0.34,0.24,0.15);
-    gluCylinder(quadric,0.16*t.scale,0.11*t.scale,h*0.52,5,1);
-    glTranslated(0,0,h*0.35);
+    gluCylinder(quadric,0.16*t.scale,0.11*t.scale,h*0.62,7,1);
+    // GLU's first radius is the bottom: wide at the base, narrow at the top.
+    // This makes both foliage layers point upward instead of looking like inverted cones.
+    glTranslated(0,0,h*0.30);
     color(0.25,0.43,0.25);
-    gluCylinder(quadric,0.0,0.95*t.scale,h*0.72,6,1);
-    glTranslated(0,0,h*0.42);
+    gluCylinder(quadric,0.82*t.scale,0.0,h*0.70,7,1);
+    glTranslated(0,0,h*0.36);
     color(0.34,0.55,0.30);
-    gluCylinder(quadric,0.0,0.66*t.scale,h*0.58,6,1);
+    gluCylinder(quadric,0.59*t.scale,0.0,h*0.58,7,1);
     glPopMatrix();
 }
 
