@@ -222,7 +222,7 @@ void drawRoads() {
     // shallower 30-degree bypass. Reserve the blocks near these routes for roads,
     // so buildings do not spawn on top of the asphalt.
     drawAngledRoad(0.0,0.0,220.0,7.2,45.0);
-    drawAngledRoad(-5.0,17.0,154.0,6.6,-30.0);
+    drawAngledRoad(-5.0,17.0,154.0,6.6,-60.0);
 }
 
 void drawBuilding(const Building& b) {
