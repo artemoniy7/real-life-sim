@@ -109,7 +109,9 @@ void makeCity() {
             if (gx==0 && gz==0) continue; // central park
             const double cx=(gx+0.5)*ROAD_SPACING;
             const double cz=(gz+0.5)*ROAD_SPACING;
-            // Keep entire blocks open where a diagonal connector crosses them.
+            // Reserve the southeast sector for the hand-planned neighborhood below.
+            if (cx>0.0 && cx<58.0 && cz<-1.0 && cz>-58.0) continue;
+            // Keep blocks clear of the diagonal connectors.
             const double diagonal45=std::abs(cz-cx);
             const double diagonal30=std::abs(cz-(17.0+(cx+5.0)*-0.57735026919));
             if (diagonal45<13.0 || diagonal30<10.5) continue;
@@ -145,6 +147,21 @@ void makeCity() {
             }
         }
     }
+    // Hand-planned residential district inspired by the user's sketch.
+    // Main avenue and local access streets are laid out first; buildings sit
+    // behind those corridors with enough clearance for entrances and driveways.
+    // Ten-storey apartment blocks: wide footprints rather than narrow towers.
+    addBuilding(12.0,-12.0,10.0,8.0,10,1);
+    addBuilding(25.0,-12.0,11.0,8.5,10,2);
+    addBuilding(39.0,-12.0,10.5,8.0,10,0);
+    addBuilding(12.0,-29.0,10.5,9.0,10,3);
+    addBuilding(27.0,-30.0,12.0,9.5,12,5);
+    addBuilding(42.0,-30.0,10.0,9.0,10,1);
+    // A lower mixed-use building and a corner landmark complete the block.
+    addBuilding(10.0,-45.0,12.0,10.0,4,4);
+    addBuilding(28.0,-46.0,14.0,10.0,6,6);
+    addBuilding(45.0,-45.0,11.0,10.0,5,2);
+
     // Small park in the central block, plus trees along the streets.
     for (int x=-3; x<=3; ++x)
         for (int z=-3; z<=3; ++z)
@@ -223,6 +240,13 @@ void drawRoads() {
     // so buildings do not spawn on top of the asphalt.
     drawAngledRoad(0.0,0.0,220.0,7.2,45.0);
     drawAngledRoad(-5.0,17.0,154.0,6.6,-60.0);
+
+    // Neighborhood access roads: a small loop and two short branches.
+    // Keep these narrower than the main avenues to match the sketch's hierarchy.
+    drawAngledRoad(28.0,-28.0,43.0,5.0,0.0);
+    drawAngledRoad(28.0,-28.0,42.0,5.0,90.0);
+    drawAngledRoad(28.0,-17.0,24.0,4.4,-90.0);
+    drawAngledRoad(28.0,-39.0,24.0,4.4,-90.0);
 }
 
 void drawBuilding(const Building& b) {
@@ -257,18 +281,18 @@ void drawTree(const Tree& t) {
     const double h=2.4*t.scale;
     glPushMatrix();
     glTranslated(t.x,0,t.z);
-    // GLU cylinders grow along local +Z; rotate that axis to world +Y so trees stand upright.
+    // GLU cylinders grow along local +Z; rotate the axis to world +Y.
     glRotated(-90.0,1.0,0.0,0.0);
     color(0.34,0.24,0.15);
-    gluCylinder(quadric,0.16*t.scale,0.11*t.scale,h*0.62,7,1);
-    // GLU's first radius is the bottom: wide at the base, narrow at the top.
-    // This makes both foliage layers point upward instead of looking like inverted cones.
+    gluCylinder(quadric,0.19*t.scale,0.13*t.scale,h*0.72,8,1);
+    // Build a conventional tree from two upright tapered crowns, each starting
+    // with its broad base below its pointed top.
+    glTranslated(0,0,h*0.28);
+    color(0.22,0.39,0.20);
+    gluCylinder(quadric,0.78*t.scale,0.0,h*0.78,8,1);
     glTranslated(0,0,h*0.30);
-    color(0.25,0.43,0.25);
-    gluCylinder(quadric,0.82*t.scale,0.0,h*0.70,7,1);
-    glTranslated(0,0,h*0.36);
-    color(0.34,0.55,0.30);
-    gluCylinder(quadric,0.59*t.scale,0.0,h*0.58,7,1);
+    color(0.32,0.52,0.27);
+    gluCylinder(quadric,0.56*t.scale,0.0,h*0.62,8,1);
     glPopMatrix();
 }
 
