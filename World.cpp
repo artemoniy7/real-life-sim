@@ -42,7 +42,7 @@ std::vector<Tree> trees;
 GLFWwindow* window = nullptr;
 GLUquadric* quadric = nullptr;
 
-double px = 0.0, pz = 13.0;
+double px = -6.0, pz = -12.0;
 double yaw = -90.0, pitch = 0.0;
 double velocityY = 0.0;
 bool grounded = true;
@@ -91,162 +91,109 @@ bool onRoad(double x, double z) {
 }
 
 void makeCity() {
-    // Buildings are deliberately spaced away from the street corridors.
+    buildings.clear();
+    trees.clear();
     const double palette[][3] = {
         {0.72,0.65,0.54}, {0.62,0.69,0.72}, {0.76,0.73,0.64},
         {0.57,0.65,0.60}, {0.78,0.61,0.48}, {0.66,0.62,0.73},
         {0.83,0.78,0.65}
     };
-    // District-based layout: each block has its own character instead of one repeated footprint.
-    // Downtown is a cluster of slim towers with open space between them; outer blocks mix
-    // apartments, shops, detached houses and larger civic/industrial buildings.
-    auto addBuilding = [&](double x,double z,double w,double d,int floors,int paletteIndex) {
-        const int p=((paletteIndex%7)+7)%7;
+    auto addBuilding = [&](double x,double z,double w,double d,int floors,int p) {
+        p=((p%7)+7)%7;
         buildings.push_back({x,z,w,d,floors*2.75,palette[p][0],palette[p][1],palette[p][2],floors});
     };
-    for (int gx=-3; gx<=2; ++gx) {
-        for (int gz=-3; gz<=2; ++gz) {
-            if (gx==0 && gz==0) continue; // central park
-            const double cx=(gx+0.5)*ROAD_SPACING;
-            const double cz=(gz+0.5)*ROAD_SPACING;
-            // Reserve the southeast sector for the hand-planned neighborhood below.
-            if (cx>0.0 && cx<58.0 && cz<-1.0 && cz>-58.0) continue;
-            // Keep blocks clear of the diagonal connectors.
-            const double diagonal45=std::abs(cz-cx);
-            const double diagonal30=std::abs(cz-(17.0+(cx+5.0)*-0.57735026919));
-            if (diagonal45<13.0 || diagonal30<10.5) continue;
-            const int seed=std::abs(gx*11+gz*5)+gx*gx+gz*gz;
-            const bool downtown=(gx>=-2 && gx<=-1 && gz>=0 && gz<=2);
-            const bool civic=((gx==2 && gz==1) || (gx==-3 && gz==-2));
-            const bool industrial=(gx==2 && gz<=-1);
 
-            if (downtown) {
-                // Chunky downtown towers sit on broad podiums, not needle-like footprints.
-                addBuilding(cx,cz,9.0,8.0,3,seed+3);                 // retail / parking podium
-                addBuilding(cx-2.0,cz-1.2,5.4,5.2,11+(seed%7),seed);
-                if ((seed%2)==0)
-                    addBuilding(cx+2.5,cz+2.0,4.8,4.7,7+((seed+2)%6),seed+2);
-            } else if (civic) {
-                // Broad public building, clear front entrance and side wings.
-                addBuilding(cx,cz,10.2,8.4,2+(seed%2),seed+3);
-                addBuilding(cx,cz-3.2,4.2,2.0,4,seed+1);
-            } else if (industrial) {
-                // Wide warehouses with a separate office annex and loading-side yard.
-                addBuilding(cx-1.0,cz,8.0,6.6,1+(seed%2),seed+4);
-                addBuilding(cx+3.0,cz+2.8,4.2,3.8,2,seed+2);
-            } else if ((seed%4)==0) {
-                // Low residential cluster: squat houses with visibly wider footprints.
-                addBuilding(cx-2.6,cz-2.3,4.4,3.8,2+(seed%2),seed);
-                addBuilding(cx+2.4,cz-2.4,4.2,3.7,2+((seed+1)%2),seed+2);
-                addBuilding(cx-2.4,cz+2.5,4.0,4.2,2,seed+3);
-                addBuilding(cx+2.5,cz+2.4,4.1,3.9,3,seed+4);
-            } else {
-                // Mixed-use block: broad mid-rise, plus a lower rear annex when it fits.
-                addBuilding(cx+(((seed%2)?1.0:-1.0)),cz,8.0,7.4,3+(seed%4),seed);
-                if ((seed%3)!=1) addBuilding(cx-2.6,cz+2.8,4.0,3.8,2+(seed%3),seed+2);
-            }
-        }
-    }
-    // Hand-planned residential district inspired by the user's sketch.
-    // Main avenue and local access streets are laid out first; buildings sit
-    // behind those corridors with enough clearance for entrances and driveways.
-    // Ten-storey apartment blocks: wide footprints rather than narrow towers.
-    addBuilding(12.0,-12.0,10.0,8.0,10,1);
-    addBuilding(25.0,-12.0,11.0,8.5,10,2);
-    addBuilding(39.0,-12.0,10.5,8.0,10,0);
-    addBuilding(12.0,-29.0,10.5,9.0,10,3);
-    addBuilding(27.0,-30.0,12.0,9.5,12,5);
-    addBuilding(42.0,-30.0,10.0,9.0,10,1);
-    // A lower mixed-use building and a corner landmark complete the block.
-    addBuilding(10.0,-45.0,12.0,10.0,4,4);
-    addBuilding(28.0,-46.0,14.0,10.0,6,6);
-    addBuilding(45.0,-45.0,11.0,10.0,5,2);
+    // Primary neighborhood from the sketch. Coordinates are arranged around
+    // three connected main roads and a compact local-street loop.
+    // Main residential blocks: broad 10-storey apartment buildings.
+    addBuilding(-34.0, 13.0, 12.0, 9.0, 10, 1);
+    addBuilding(-16.0, 16.0, 13.0, 9.5, 10, 2);
+    addBuilding(  3.0, 19.0, 12.0, 9.0, 10, 0);
+    addBuilding( 22.0, 22.0, 12.0, 9.5, 10, 3);
+    addBuilding(-20.0, -8.5, 12.0, 9.0, 10, 4);
+    addBuilding( -2.0, -8.5, 13.0, 9.5, 10, 1);
+    addBuilding( 17.0, -8.5, 12.0, 9.0, 10, 5);
 
-    // Small park in the central block, plus trees along the streets.
-    for (int x=-3; x<=3; ++x)
-        for (int z=-3; z<=3; ++z)
-            if ((x*x+z*z)%3 != 1)
-                trees.push_back({x*2.15+10.0,z*2.15+10.0,0.8+((x+z+8)%3)*0.12});
-    for (int k=-3; k<=3; ++k) {
-        for (int side : {-1,1}) {
-            trees.push_back({k*ROAD_SPACING+side*5.9, -WORLD_LIMIT*0.65, 0.9});
-            trees.push_back({-WORLD_LIMIT*0.65, k*ROAD_SPACING+side*5.9, 0.85});
-        }
+    // Extra blocks fill the empty fields with a small mixed-use center,
+    // a school/community building and a park, all outside the main carriageways.
+    addBuilding(-58.0, -20.0, 13.0, 10.0, 8, 2);
+    addBuilding(-40.0, -23.0, 14.0, 11.0, 6, 6);
+    addBuilding(-18.0, -29.0, 16.0, 12.0, 5, 4);
+    addBuilding(  8.0, -29.0, 15.0, 12.0, 7, 0);
+    addBuilding( 34.0, -29.0, 17.0, 13.0, 4, 3);
+    addBuilding(-55.0,  32.0, 14.0, 11.0, 5, 0);
+    addBuilding(-35.0,  35.0, 15.0, 12.0, 7, 5);
+
+    // Trees are deliberately placed in park pockets and along the outer green
+    // edges, never in building footprints or on the road centerlines.
+    for (int ix=0; ix<5; ++ix)
+        for (int iz=0; iz<3; ++iz)
+            trees.push_back({42.0+ix*2.7, -48.0+iz*2.7, 0.9+(ix%2)*0.12});
+    for (int i=0;i<7;++i) {
+        trees.push_back({-73.0+i*5.0, 9.0, 0.9});
+        trees.push_back({-73.0+i*5.0, -7.0, 0.9});
     }
 }
 
-void drawAngledRoad(double x,double z,double length,double width,double angleDegrees) {
+void drawRoadSegment(double x1,double z1,double x2,double z2,double width,
+                     double r,double g,double b,double y=0.012) {
+    const double dx=x2-x1, dz=z2-z1;
+    const double length=std::sqrt(dx*dx+dz*dz);
+    if (length<0.01) return;
+    const double angle=std::atan2(dx,dz)*180.0/PI;
     glPushMatrix();
-    glTranslated(x,0.012,z);
-    glRotated(angleDegrees,0,1,0);
-    cube(0,0,0,width,0.035,length,0.20,0.22,0.23);
-    // Broken center line follows the road's local axis.
-    for (double p=-length/2+5.0; p<length/2-2.0; p+=10.0)
-        cube(0,0.025,p,0.12,0.012,3.8,0.83,0.80,0.66);
-    // Low curb strips give the angled road a readable edge.
-    cube(-width/2-0.58,0.045,0,0.85,0.09,length,0.62,0.61,0.56);
-    cube( width/2+0.58,0.045,0,0.85,0.09,length,0.62,0.61,0.56);
+    glTranslated((x1+x2)/2.0,y,(z1+z2)/2.0);
+    glRotated(angle,0,1,0);
+    cube(0,0,0,width,0.035,length+width*0.18,r,g,b);
     glPopMatrix();
 }
 
+void drawSidewalkSegment(double x1,double z1,double x2,double z2,double width) {
+    drawRoadSegment(x1,z1,x2,z2,width,0.62,0.61,0.56,0.045);
+}
+
 void drawRoads() {
-    // Grass base.
+    // One clean road plan: two main avenues, one diagonal approach and
+    // a few short local streets. No city-wide grid or overlapping diagonals.
     cube(0,-0.22,0,WORLD_LIMIT*2,0.4,WORLD_LIMIT*2,0.36,0.52,0.31);
-    // A grid of asphalt roads and simple sidewalks.
-    for (int i=-3; i<=3; ++i) {
-        const double c=i*ROAD_SPACING;
-        // Asphalt strips. Their overlap at intersections is intentional.
-        cube(c,0.005,0,ROAD_HALF*2,0.03,WORLD_LIMIT*2,0.20,0.22,0.23);
-        cube(0,0.006,c,WORLD_LIMIT*2,0.03,ROAD_HALF*2,0.20,0.22,0.23);
 
-        // Sidewalks are built as separate block-length segments. Leaving gaps at
-        // every crossing prevents pavement from covering the intersecting road.
-        for (int side : {-1,1}) {
-            const double edge = c+side*(ROAD_HALF+0.75);
-            for (int block=-4; block<=3; ++block) {
-                const double start=block*ROAD_SPACING+ROAD_HALF;
-                const double end=(block+1)*ROAD_SPACING-ROAD_HALF;
-                if (end<=-WORLD_LIMIT || start>=WORLD_LIMIT) continue;
-                const double z0=std::max(start,-WORLD_LIMIT);
-                const double z1=std::min(end,WORLD_LIMIT);
-                if (z1>z0)
-                    cube(edge,0.035,(z0+z1)/2,1.15,0.10,z1-z0,0.62,0.61,0.56);
+    // Main east-west avenue and the north-south connector.
+    drawRoadSegment(-WORLD_LIMIT,0.0,WORLD_LIMIT,0.0,8.4,0.20,0.22,0.23);
+    drawRoadSegment(55.0,-WORLD_LIMIT,55.0,WORLD_LIMIT,8.4,0.20,0.22,0.23);
+    // A secondary eastbound road meets the north-south avenue at a T-junction.
+    drawRoadSegment(55.0,15.0,WORLD_LIMIT,15.0,7.0,0.20,0.22,0.23);
+    // Diagonal approach from the west into the northern side of the district.
+    drawRoadSegment(-70.0,0.0,55.0,39.0,7.2,0.20,0.22,0.23);
 
-                const double x0=std::max(start,-WORLD_LIMIT);
-                const double x1=std::min(end,WORLD_LIMIT);
-                if (x1>x0)
-                    cube((x0+x1)/2,0.035,edge,x1-x0,0.10,1.15,0.62,0.61,0.56);
-            }
-        }
-        // Dashed center markings, stopping visually beneath pedestrian crossings.
-        for (int p=-7; p<=7; ++p) {
-            cube(c,0.027,p*11.0,0.12,0.015,4.1,0.83,0.80,0.66);
-            cube(p*11.0,0.028,c,4.1,0.015,0.12,0.83,0.80,0.66);
-        }
-        // Zebra crossings on all four arms of every grid intersection.
-        // Each white bar is a flat box slightly above the asphalt to avoid z-fighting.
-        for (int side : {-1,1}) {
-            const double crossZ=c+side*(ROAD_HALF+0.95);
-            const double crossX=c+side*(ROAD_HALF+0.95);
-            for (double offset=-3.35; offset<=3.36; offset+=1.05) {
-                cube(c+offset,0.031,crossZ,0.62,0.018,0.42,0.91,0.90,0.82);
-                cube(crossX,0.032,c+offset,0.42,0.018,0.62,0.91,0.90,0.82);
-            }
-        }
+    // Local access roads form short connected branches inside the housing area.
+    drawRoadSegment(-48.0,8.0,38.0,34.0,4.4,0.27,0.29,0.29);
+    drawRoadSegment(-43.0,-4.0,24.0,14.0,4.4,0.27,0.29,0.29);
+    drawRoadSegment(-30.0,-15.0,34.0,-15.0,4.4,0.27,0.29,0.29);
+    drawRoadSegment(37.0,-15.0,37.0,28.0,4.4,0.27,0.29,0.29);
+    drawRoadSegment(-52.0,-27.0,-52.0,-9.0,4.2,0.27,0.29,0.29);
+
+    // Sidewalks follow the main roads as separate strips, kept off the asphalt.
+    drawSidewalkSegment(-WORLD_LIMIT,5.0,WORLD_LIMIT,5.0,1.25);
+    drawSidewalkSegment(-WORLD_LIMIT,-5.0,WORLD_LIMIT,-5.0,1.25);
+    drawSidewalkSegment(60.0,-WORLD_LIMIT,60.0,WORLD_LIMIT,1.25);
+    drawSidewalkSegment(50.0,-WORLD_LIMIT,50.0,WORLD_LIMIT,1.25);
+    // Short sidewalk sections beside the diagonal and internal streets.
+    drawSidewalkSegment(-68.0,4.5,54.0,43.5,1.0);
+    drawSidewalkSegment(-72.0,-4.5,56.0,34.5,1.0);
+
+    // Dashed lane markings on the main avenues.
+    for (double x=-86.0;x<=86.0;x+=11.0)
+        cube(x,0.040,0.0,4.0,0.018,0.12,0.88,0.84,0.70);
+    for (double z=-86.0;z<=86.0;z+=11.0)
+        cube(55.0,0.040,z,0.12,0.018,4.0,0.88,0.84,0.70);
+
+    // Crosswalks only at the two planned major junctions.
+    for (double offset=-3.0;offset<=3.01;offset+=1.0) {
+        cube(55.0+offset,0.045,5.8,0.55,0.018,2.6,0.92,0.91,0.83);
+        cube(55.0+offset,0.045,24.2,0.55,0.018,2.6,0.92,0.91,0.83);
+        cube(49.2,0.045,offset,2.6,0.018,0.55,0.92,0.91,0.83);
+        cube(60.8,0.045,offset,2.6,0.018,0.55,0.92,0.91,0.83);
     }
-
-    // Secondary connectors break the rigid grid: one 45-degree diagonal and a
-    // shallower 30-degree bypass. Reserve the blocks near these routes for roads,
-    // so buildings do not spawn on top of the asphalt.
-    drawAngledRoad(0.0,0.0,220.0,7.2,45.0);
-    drawAngledRoad(-5.0,17.0,154.0,6.6,-60.0);
-
-    // Neighborhood access roads: a small loop and two short branches.
-    // Keep these narrower than the main avenues to match the sketch's hierarchy.
-    drawAngledRoad(28.0,-3.0,64.0,5.0,90.0);
-    drawAngledRoad(28.0,-21.0,64.0,5.0,90.0);
-    drawAngledRoad(28.0,-38.0,64.0,5.0,90.0);
-    drawAngledRoad(28.0,-55.0,64.0,5.0,90.0);
 }
 
 void drawBuilding(const Building& b) {
@@ -425,7 +372,7 @@ void renderScene(int width,int height) {
     drawRoads();
     for (const Building& b:buildings) drawBuilding(b);
     for (const Tree& t:trees) drawTree(t);
-    drawStreetFurniture();
+    // Street furniture omitted on this clean-map pass; it will be placed along the final road plan.
     glDisable(GL_LIGHTING);
 
     // Small crosshair makes first-person orientation clear.
