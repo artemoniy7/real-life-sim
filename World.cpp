@@ -97,13 +97,16 @@ void makeCity() {
         {0.57,0.65,0.60}, {0.78,0.61,0.48}, {0.66,0.62,0.73},
         {0.83,0.78,0.65}
     };
-    for (int gx=-3; gx<=3; ++gx) {
-        for (int gz=-3; gz<=3; ++gz) {
+    // Place each building in the middle of a city block, never on an asphalt lane.
+    // Road centers are multiples of ROAD_SPACING; block centers sit halfway between them.
+    for (int gx=-3; gx<=2; ++gx) {
+        for (int gz=-3; gz<=2; ++gz) {
+            // Keep the central block open as a small park.
             if (gx==0 && gz==0) continue;
-            const double bx = gx*ROAD_SPACING + ((gx+gz)%2 ? 2.0 : -2.0);
-            const double bz = gz*ROAD_SPACING + ((gx-gz)%2 ? -2.0 : 2.0);
-            const double w = 7.2 + ((gx*gx+gz*gz)%3)*1.25;
-            const double d = 7.0 + ((gx+gz+8)%3)*1.15;
+            const double bx = (gx+0.5)*ROAD_SPACING + (((gx+gz)&1) ? 0.8 : -0.8);
+            const double bz = (gz+0.5)*ROAD_SPACING + (((gx-gz)&1) ? -0.8 : 0.8);
+            const double w = 7.2 + ((gx*gx+gz*gz)%3)*1.0;
+            const double d = 7.0 + ((std::abs(gx+gz)+2)%3)*0.9;
             const int floors = 2 + ((std::abs(gx*7+gz*3)+1)%5);
             const double h = floors*2.75;
             const int p = (std::abs(gx*11+gz*5)+gx*gx+gz*gz)%7;
@@ -127,13 +130,30 @@ void drawRoads() {
     // Grass base.
     cube(0,-0.22,0,WORLD_LIMIT*2,0.4,WORLD_LIMIT*2,0.36,0.52,0.31);
     // A grid of asphalt roads and simple sidewalks.
-    for (int i=-4; i<=4; ++i) {
-        double c=i*ROAD_SPACING;
+    for (int i=-3; i<=3; ++i) {
+        const double c=i*ROAD_SPACING;
+        // Asphalt strips. Their overlap at intersections is intentional.
         cube(c,0.005,0,ROAD_HALF*2,0.03,WORLD_LIMIT*2,0.20,0.22,0.23);
         cube(0,0.006,c,WORLD_LIMIT*2,0.03,ROAD_HALF*2,0.20,0.22,0.23);
+
+        // Sidewalks are built as separate block-length segments. Leaving gaps at
+        // every crossing prevents pavement from covering the intersecting road.
         for (int side : {-1,1}) {
-            cube(c+side*(ROAD_HALF+0.75),0.035,0,1.15,0.10,WORLD_LIMIT*2,0.62,0.61,0.56);
-            cube(0,0.035,c+side*(ROAD_HALF+0.75),WORLD_LIMIT*2,0.10,1.15,0.62,0.61,0.56);
+            const double edge = c+side*(ROAD_HALF+0.75);
+            for (int block=-4; block<=3; ++block) {
+                const double start=block*ROAD_SPACING+ROAD_HALF;
+                const double end=(block+1)*ROAD_SPACING-ROAD_HALF;
+                if (end<=-WORLD_LIMIT || start>=WORLD_LIMIT) continue;
+                const double z0=std::max(start,-WORLD_LIMIT);
+                const double z1=std::min(end,WORLD_LIMIT);
+                if (z1>z0)
+                    cube(edge,0.035,(z0+z1)/2,1.15,0.10,z1-z0,0.62,0.61,0.56);
+
+                const double x0=std::max(start,-WORLD_LIMIT);
+                const double x1=std::min(end,WORLD_LIMIT);
+                if (x1>x0)
+                    cube((x0+x1)/2,0.035,edge,x1-x0,0.10,1.15,0.62,0.61,0.56);
+            }
         }
         // Dashed center markings.
         for (int p=-7; p<=7; ++p) {
@@ -175,12 +195,14 @@ void drawTree(const Tree& t) {
     const double h=2.4*t.scale;
     glPushMatrix();
     glTranslated(t.x,0,t.z);
+    // GLU cylinders grow along local +Z; rotate that axis to world +Y so trees stand upright.
+    glRotated(-90.0,1.0,0.0,0.0);
     color(0.34,0.24,0.15);
     gluCylinder(quadric,0.16*t.scale,0.11*t.scale,h*0.52,5,1);
-    glTranslated(0,h*0.35,0);
+    glTranslated(0,0,h*0.35);
     color(0.25,0.43,0.25);
     gluCylinder(quadric,0.0,0.95*t.scale,h*0.72,6,1);
-    glTranslated(0,h*0.42,0);
+    glTranslated(0,0,h*0.42);
     color(0.34,0.55,0.30);
     gluCylinder(quadric,0.0,0.66*t.scale,h*0.58,6,1);
     glPopMatrix();
@@ -189,11 +211,16 @@ void drawTree(const Tree& t) {
 void drawStreetFurniture() {
     for (int i=-3;i<=3;++i) {
         for (int side : {-1,1}) {
-            double c=i*ROAD_SPACING+side*(ROAD_HALF+1.25);
-            cube(c,1.8,5.5,0.10,3.6,0.10,0.24,0.25,0.24);
-            cube(c,3.55,5.8,0.55,0.12,0.45,0.88,0.79,0.48);
-            cube(5.5,1.8,c,0.10,3.6,0.10,0.24,0.25,0.24);
-            cube(5.8,3.55,c,0.45,0.12,0.55,0.88,0.79,0.48);
+            const double c=i*ROAD_SPACING+side*(ROAD_HALF+1.25);
+            // Keep lamp posts on the sidewalk, not in the middle of a crossing.
+            for (int segment=-3; segment<=3; ++segment) {
+                const double along=segment*ROAD_SPACING+12.0;
+                if (std::abs(along)>WORLD_LIMIT-4) continue;
+                cube(c,1.8,along,0.10,3.6,0.10,0.24,0.25,0.24);
+                cube(c,3.55,along+0.3,0.55,0.12,0.45,0.88,0.79,0.48);
+                cube(along,1.8,c,0.10,3.6,0.10,0.24,0.25,0.24);
+                cube(along+0.3,3.55,c,0.45,0.12,0.55,0.88,0.79,0.48);
+            }
         }
     }
 }
