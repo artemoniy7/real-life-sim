@@ -243,10 +243,10 @@ void drawRoads() {
 
     // Neighborhood access roads: a small loop and two short branches.
     // Keep these narrower than the main avenues to match the sketch's hierarchy.
-    drawAngledRoad(28.0,-28.0,43.0,5.0,0.0);
-    drawAngledRoad(28.0,-28.0,42.0,5.0,90.0);
-    drawAngledRoad(28.0,-17.0,24.0,4.4,-90.0);
-    drawAngledRoad(28.0,-39.0,24.0,4.4,-90.0);
+    drawAngledRoad(28.0,-3.0,64.0,5.0,90.0);
+    drawAngledRoad(28.0,-21.0,64.0,5.0,90.0);
+    drawAngledRoad(28.0,-38.0,64.0,5.0,90.0);
+    drawAngledRoad(28.0,-55.0,64.0,5.0,90.0);
 }
 
 void drawBuilding(const Building& b) {
