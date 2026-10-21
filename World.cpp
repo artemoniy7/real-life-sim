@@ -106,10 +106,10 @@ void makeCity() {
     // Primary neighborhood from the sketch. Coordinates are arranged around
     // three connected main roads and a compact local-street loop.
     // Main residential blocks: broad 10-storey apartment buildings.
-    addBuilding(-34.0, 13.0, 12.0, 9.0, 10, 1);
-    addBuilding(-16.0, 16.0, 13.0, 9.5, 10, 2);
-    addBuilding(  3.0, 19.0, 12.0, 9.0, 10, 0);
-    addBuilding( 22.0, 22.0, 12.0, 9.5, 10, 3);
+    addBuilding(-34.0, 23.0, 12.0, 9.0, 10, 1);
+    addBuilding(-16.0, 28.0, 13.0, 9.5, 10, 2);
+    addBuilding(  3.0, 34.0, 12.0, 9.0, 10, 0);
+    addBuilding( 22.0, 40.0, 12.0, 9.5, 10, 3);
     addBuilding(-20.0, -8.5, 12.0, 9.0, 10, 4);
     addBuilding( -2.0, -8.5, 13.0, 9.5, 10, 1);
     addBuilding( 17.0, -8.5, 12.0, 9.0, 10, 5);
